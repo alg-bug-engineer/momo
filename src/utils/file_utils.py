@@ -137,30 +137,9 @@ def count_panels_from_table(table_content: str) -> int:
                 continue
             
             # 跳过表头行（通常包含"格数"、"画面描述"等关键词）
-            if '格数' in line or '画面描述' in line or '台词' in line or '旁白' in line:
+            if '台词/旁白' in line:
                 continue
-            
-            # 跳过分隔行（包含 :--- 或类似的分隔符）
-            if re.match(r'^\|[\s:-\|]+\|$', line):
-                continue
-            
-            cells = [cell.strip() for cell in line.split(',')]
-            if cells and len(cells) > 0:
-                first_cell = cells[0].strip()
-                # 如果第一列是数字，认为是数据行
-                if first_cell.isdigit():
-                    data_row_count += 1
-    
-        # 如果通过上述方法没有找到，尝试更宽松的匹配
-        if data_row_count == 0:
-            # 查找所有包含数字的行（可能是格数）
-            for line in lines:
-                line = line.strip()
-                if line.startswith('|') and '|' in line:
-                    # 检查是否包含数字
-                    if re.search(r'\d+', line):
-                        data_row_count += 1
-        
+            data_row_count += 1
         return max(data_row_count, 0)  # 至少返回 0
         
     except Exception as e:

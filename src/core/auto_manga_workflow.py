@@ -18,6 +18,7 @@ from src.config.settings import (
     RESPONSE_TIMEOUT,
     UPLOAD_TIMEOUT,
     DEFAULT_IMAGE_PATH,
+    DEFAULT_COVER_IMAGE_PATH,
     DEFAULT_IMAGES_DIR,
     DEFAULT_SESSIONS_DIR
 )
@@ -38,6 +39,8 @@ class AutoMangaWorkflow(BrowserController):
         super().__init__()
         self.concept = concept
         self.copied_table_content = None
+        self.theme_name = None  # 主题名称
+        self.theme_dir = None  # 主题文件夹路径
     
     def build_script_prompt(self) -> str:
         """构建漫画脚本生成提示词"""
@@ -58,6 +61,101 @@ class AutoMangaWorkflow(BrowserController):
             return f"\n\n严格参考附件的角色形象，根据漫画脚本的内容，生成P{start_panel}-P{end_panel} 的宫格漫画图片，务必保证角色形象一致，内容于脚本一致，最终输出竖版、宫格漫画图片。"
         else:
             return f"同样的要求，输出 P{start_panel}-P{end_panel} 宫格的竖版、漫画图片"
+    
+    async def generate_theme_name(self) -> str:
+        """基于概念名生成主题名称（类似"强化学习求生记"）
+        
+        Returns:
+            str: 主题名称
+        """
+        print("[DEBUG] 开始生成主题名称...")
+        
+        # 构建主题生成提示词
+        theme_prompt = f"""请基于以下AI概念，生成一个简洁、有趣的漫画主题名称（类似"强化学习求生记"这样的格式）。
+
+要求：
+1. 主题名称应该简洁有力，朗朗上口
+2. 可以结合概念的特点，添加"求生记"、"大冒险"、"奇遇记"等后缀
+3. 长度控制在4-8个汉字
+4. 只返回主题名称，不要其他解释
+
+概念：{self.concept}
+
+请直接输出主题名称："""
+        
+        try:
+            # 发送主题生成请求
+            await self.send_message(theme_prompt)
+            
+            # 等待响应生成
+            if await self.wait_for_response():
+                # 获取响应内容
+                response_text = await self.page.evaluate("""
+                    () => {
+                        const responseContainer = document.querySelector('.response-container, .model-response, [data-test-id="model-response"]');
+                        if (responseContainer) {
+                            return responseContainer.innerText || responseContainer.textContent || '';
+                        }
+                        return '';
+                    }
+                """)
+                
+                # 提取主题名称（取第一行，去除空白字符）
+                if response_text:
+                    lines = response_text.strip().split('\n')
+                    theme_name = lines[0].strip()
+                    # 清理可能的标记符号
+                    theme_name = theme_name.replace('主题名称：', '').replace('主题：', '').replace('：', '').strip()
+                    # 如果包含引号，提取引号内容
+                    if '"' in theme_name or '"' in theme_name or '「' in theme_name or '」' in theme_name:
+                        import re
+                        match = re.search(r'[""「]([^""」]+)[""」]', theme_name)
+                        if match:
+                            theme_name = match.group(1)
+                    
+                    # 限制长度
+                    if len(theme_name) > 20:
+                        theme_name = theme_name[:20]
+                    
+                    print(f"[DEBUG] ✓ 生成的主题名称: {theme_name}")
+                    return theme_name
+                else:
+                    raise Exception("未获取到响应内容")
+            else:
+                raise Exception("等待响应超时")
+                
+        except Exception as e:
+            print(f"[WARNING] 生成主题名称失败: {e}，使用默认主题名称")
+            # 如果生成失败，使用概念名作为默认主题
+            default_theme = self.concept.replace('的', '').replace('领域', '').strip()
+            if len(default_theme) > 10:
+                default_theme = default_theme[:10]
+            default_theme = f"{default_theme}漫画"
+            return default_theme
+    
+    def create_theme_directory(self, theme_name: str) -> str:
+        """创建主题文件夹
+        
+        Args:
+            theme_name: 主题名称
+            
+        Returns:
+            str: 主题文件夹路径
+        """
+        # 清理主题名称，移除不允许的字符
+        import re
+        safe_theme_name = re.sub(r'[<>:"/\\|?*]', '', theme_name)
+        safe_theme_name = safe_theme_name.strip()
+        
+        # 构建主题文件夹路径
+        base_images_dir = get_absolute_path(DEFAULT_IMAGES_DIR)
+        theme_dir = os.path.join(base_images_dir, safe_theme_name)
+        
+        # 创建文件夹
+        Path(theme_dir).mkdir(parents=True, exist_ok=True)
+        
+        print(f"[DEBUG] ✓ 主题文件夹已创建: {theme_dir}")
+        return theme_dir
     
     async def send_message(self, query: str):
         """在输入框输入文本并发送
@@ -793,13 +891,135 @@ class AutoMangaWorkflow(BrowserController):
             # 保存所有图片（兼容旧逻辑）
             return await saver.save_all_images(save_dir)
     
+    async def generate_cover_image(self, cover_image_path: str = DEFAULT_COVER_IMAGE_PATH, save_dir: str = None) -> str:
+        """生成封面图片
+        
+        Args:
+            cover_image_path: 封面模板图片路径
+            save_dir: 保存目录，如果为None则使用主题文件夹
+            
+        Returns:
+            str: 保存的封面图片路径，如果失败则返回None
+        """
+        if not self.theme_name:
+            print("[WARNING] 主题名称未设置，无法生成封面图片")
+            return None
+        
+        print("\n" + "="*80)
+        print("第四阶段：生成封面图片")
+        print("="*80)
+        
+        try:
+            # 使用主题文件夹作为保存路径
+            if save_dir is None:
+                save_dir = self.theme_dir if self.theme_dir else DEFAULT_IMAGES_DIR
+            
+            # 构建封面生成提示词
+            cover_query = f"根据生成的{self.theme_name}，总结一个主题，替换掉图中\"Vibe Coding 赛博朋克\"这个字符串，输出最终的图片。只能更改\"Vibe Coding 赛博朋克\"这个文字，其他的保持不变。去除右下角的水印。"
+            
+            print(f"[INFO] 封面图片模板: {cover_image_path}")
+            print(f"[INFO] 主题名称: {self.theme_name}")
+            print(f"[INFO] 保存目录: {save_dir}")
+            print(f"[INFO] 封面生成提示词: {cover_query}")
+            
+            # 上传封面模板图片
+            print("\n[DEBUG] 上传封面模板图片...")
+            await self.upload_image(cover_image_path)
+            await asyncio.sleep(1)  # 等待图片上传完成
+            
+            # 发送多模态消息（包含图片和文本）
+            print("[DEBUG] 发送封面生成请求...")
+            await self.send_multimodal_message(cover_query)
+            
+            # 等待图片生成完成
+            print("[DEBUG] 等待封面图片生成...")
+            container_selector = '.attachment-container.generated-images'
+            
+            # 记录发送前的图片数量和URL
+            initial_image_urls = set()
+            try:
+                existing_images = await self.page.query_selector_all(f'{container_selector} img[src]')
+                initial_image_count = len(existing_images)
+                print(f"[DEBUG] 发送前图片数量: {initial_image_count}")
+                
+                # 记录发送前的所有图片URL
+                from src.core.image_saver import ImageSaver
+                saver = ImageSaver(self.page)
+                for img in existing_images:
+                    try:
+                        img_src = await img.get_attribute('src')
+                        if img_src:
+                            processed_url = saver._process_image_url(img_src)
+                            initial_image_urls.add(processed_url)
+                    except:
+                        continue
+            except:
+                initial_image_count = 0
+            
+            # 等待新图片生成（使用更长的超时时间）
+            print("[DEBUG] 等待封面图片生成（最多等待 180 秒）...")
+            success, new_image_urls = await self.wait_for_images_generated(
+                initial_image_count=initial_image_count,
+                saved_image_urls=initial_image_urls  # 排除发送前已存在的图片
+            )
+            
+            # 即使等待超时，也尝试保存已检测到的图片
+            if len(new_image_urls) > 0:
+                print(f"[DEBUG] ✓ 检测到 {len(new_image_urls)} 张新图片URL，尝试保存...")
+                
+                # 额外等待一下，确保图片至少部分加载
+                await asyncio.sleep(3)
+                
+                # 保存封面图片（即使加载超时也尝试保存）
+                print("[DEBUG] 保存封面图片...")
+                saved_files = await self.save_generated_images(save_dir, new_image_urls)
+                
+                if saved_files and len(saved_files) > 0:
+                    # 封面图片应该只有一张，取第一张
+                    cover_file = saved_files[0]
+                    print(f"[DEBUG] ✓ 封面图片已保存: {cover_file}")
+                    return cover_file
+                else:
+                    # 如果通过URL保存失败，尝试使用备用方法：直接保存最新容器中的图片
+                    print("[WARNING] 通过URL保存失败，尝试备用方法：直接保存最新容器中的图片...")
+                    try:
+                        containers = await self.page.query_selector_all(container_selector)
+                        if containers:
+                            latest_container = containers[-1]
+                            # 使用 save_all_images_sequentially 的备用逻辑
+                            from src.core.image_saver import ImageSaver
+                            saver = ImageSaver(self.page)
+                            # 尝试直接保存最新容器中的图片
+                            saved_files = await saver.save_all_images(save_dir)
+                            if saved_files:
+                                # 取最后一张（应该是封面图片）
+                                cover_file = saved_files[-1]
+                                print(f"[DEBUG] ✓ 封面图片已保存（备用方法）: {cover_file}")
+                                return cover_file
+                    except Exception as backup_error:
+                        print(f"[WARNING] 备用保存方法也失败: {backup_error}")
+                    
+                    print("[WARNING] 封面图片生成成功但保存失败")
+                    return None
+            else:
+                print("[WARNING] 未检测到新生成的封面图片")
+                return None
+                
+        except Exception as e:
+            print(f"[ERROR] 生成封面图片失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     async def run(
         self, 
         concept: str = None, 
         demo_image_path: str = DEFAULT_IMAGE_PATH, 
         images_dir: str = DEFAULT_IMAGES_DIR,
         skip_script_generation: bool = False, 
-        session_file: str = None
+        session_file: str = None,
+        skip_to_cover: bool = False,
+        theme_name: str = None
     ):
         """运行完整工作流
         
@@ -809,6 +1029,8 @@ class AutoMangaWorkflow(BrowserController):
             images_dir: 图片保存目录，默认为 "assets/images"
             skip_script_generation: 是否跳过脚本生成步骤，直接从 session 文件读取
             session_file: 当 skip_script_generation=True 时，指定要读取的 session 文件路径
+            skip_to_cover: 是否跳过脚本和漫画生成，直接测试封面生成
+            theme_name: 当 skip_to_cover=True 时，指定主题名称（用于封面生成）
         """
         if concept:
             self.concept = concept
@@ -817,6 +1039,53 @@ class AutoMangaWorkflow(BrowserController):
             # 步骤1: 连接浏览器并打开 Gemini
             await self.connect_to_browser()
             await self.open_gemini()
+            
+            # 如果 skip_to_cover=True，直接进入封面生成
+            if skip_to_cover:
+                print("\n" + "="*80)
+                print("跳过脚本和漫画生成，直接测试封面生成")
+                print("="*80)
+                
+                # 设置主题名称
+                if theme_name:
+                    self.theme_name = theme_name
+                elif self.concept:
+                    # 如果没有提供主题名称，使用概念名生成默认主题
+                    import re
+                    default_theme = self.concept.replace('的', '').replace('领域', '').strip()
+                    if len(default_theme) > 10:
+                        default_theme = default_theme[:10]
+                    self.theme_name = f"{default_theme}漫画"
+                else:
+                    self.theme_name = "测试主题漫画"
+                
+                # 创建主题文件夹
+                self.theme_dir = self.create_theme_directory(self.theme_name)
+                print(f"[INFO] ✓ 主题名称: {self.theme_name}")
+                print(f"[INFO] ✓ 主题文件夹: {self.theme_dir}")
+                
+                # 选择 Create Images 工具
+                print("\n" + "="*80)
+                print("步骤1: 选择 Create Images 工具")
+                print("="*80)
+                await self.select_create_images_tool()
+                
+                # 直接生成封面图片
+                save_dir = self.theme_dir if self.theme_dir else images_dir
+                cover_file = await self.generate_cover_image(
+                    cover_image_path=DEFAULT_COVER_IMAGE_PATH,
+                    save_dir=save_dir
+                )
+                
+                if cover_file:
+                    print(f"[INFO] ✓ 封面图片已生成并保存: {cover_file}")
+                else:
+                    print("[WARNING] 封面图片生成失败")
+                
+                print("\n" + "="*80)
+                print("✓ 封面生成测试完成！")
+                print("="*80)
+                return
             
             # 步骤2: 生成脚本或从文件读取
             panel_count = 0  # 宫格总数
@@ -829,6 +1098,20 @@ class AutoMangaWorkflow(BrowserController):
                     raise Exception("skip_script_generation=True 时必须提供 session_file 参数")
                 copied_content, panel_count = self.load_from_session_file(session_file)
                 print(f"[DEBUG] ✓ 已从 session 文件读取内容，宫格数量: {panel_count}")
+                
+                # 如果跳过脚本生成，使用概念名生成默认主题
+                print("\n" + "="*80)
+                print("步骤2: 生成主题名称并创建主题文件夹")
+                print("="*80)
+                # 基于概念名生成默认主题名称
+                import re
+                default_theme = self.concept.replace('的', '').replace('领域', '').strip()
+                if len(default_theme) > 10:
+                    default_theme = default_theme[:10]
+                self.theme_name = f"{default_theme}漫画"
+                self.theme_dir = self.create_theme_directory(self.theme_name)
+                print(f"[INFO] ✓ 主题名称: {self.theme_name}")
+                print(f"[INFO] ✓ 主题文件夹: {self.theme_dir}")
             else:
                 # 正常流程：生成脚本
                 print("\n" + "="*80)
@@ -862,6 +1145,15 @@ class AutoMangaWorkflow(BrowserController):
                 print("步骤4: 保存结果到文件")
                 print("="*80)
                 session_file = self.save_to_file(script_prompt, copied_content)
+                
+                # 步骤5.5: 生成主题名称并创建主题文件夹
+                print("\n" + "="*80)
+                print("步骤5: 生成主题名称并创建主题文件夹")
+                print("="*80)
+                self.theme_name = await self.generate_theme_name()
+                self.theme_dir = self.create_theme_directory(self.theme_name)
+                print(f"[INFO] ✓ 主题名称: {self.theme_name}")
+                print(f"[INFO] ✓ 主题文件夹: {self.theme_dir}")
             
             # 步骤6: 打开新聊天窗口
             print("\n" + "="*80)
@@ -985,14 +1277,35 @@ class AutoMangaWorkflow(BrowserController):
             print("\n" + "="*80)
             print("第三阶段：统一检测并顺序保存所有图片")
             print("="*80)
-            saved_files = await self.save_all_images_sequentially(images_dir, total_batches)
+            
+            # 使用主题文件夹作为保存路径（如果已生成）
+            save_dir = self.theme_dir if self.theme_dir else images_dir
+            if self.theme_dir:
+                print(f"[INFO] 图片将保存到主题文件夹: {save_dir}")
+            else:
+                print(f"[INFO] 图片将保存到默认文件夹: {save_dir}")
+            
+            saved_files = await self.save_all_images_sequentially(save_dir, total_batches)
             
             if saved_files:
-                print(f"[DEBUG] ✓ 成功保存 {len(saved_files)} 张图片到 {images_dir}")
+                print(f"[DEBUG] ✓ 成功保存 {len(saved_files)} 张图片到 {save_dir}")
                 for idx, file in enumerate(saved_files, 1):
                     print(f"  {idx}. {file}")
             else:
                 print("[WARNING] 未保存任何图片")
+            
+            # 第四阶段：生成封面图片
+            if self.theme_name and self.theme_dir:
+                cover_file = await self.generate_cover_image(
+                    cover_image_path=DEFAULT_COVER_IMAGE_PATH,
+                    save_dir=save_dir
+                )
+                if cover_file:
+                    print(f"[INFO] ✓ 封面图片已生成并保存: {cover_file}")
+                else:
+                    print("[WARNING] 封面图片生成失败，但工作流继续完成")
+            else:
+                print("[WARNING] 主题名称或主题文件夹未设置，跳过封面图片生成")
             
             print("\n" + "="*80)
             print(f"✓ 工作流完成！共生成 {total_batches} 批次，{panel_count} 个宫格")

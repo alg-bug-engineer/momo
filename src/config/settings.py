@@ -12,6 +12,7 @@ GEMINI_URL = "https://gemini.google.com/app"
 
 # 文件路径配置
 DEFAULT_IMAGE_PATH = "assets/samples/demo.png"
+DEFAULT_COVER_IMAGE_PATH = "assets/samples/fengmian.jpg"  # 封面图片路径
 DEFAULT_IMAGES_DIR = "data/images"
 DEFAULT_SESSIONS_DIR = "sessions"
 DEFAULT_CONFIGS_DIR = "data/configs"
