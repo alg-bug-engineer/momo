@@ -36,7 +36,7 @@ async def find_working_selector(page, selectors: List[str], timeout: int = 10000
 async def wait_for_content_stabilization(
     page, 
     content_selector: str, 
-    max_timeout: int = 120000, 
+    max_timeout: int = 180000, 
     check_interval: int = 2000, 
     stable_count: int = 3
 ) -> bool:
@@ -91,7 +91,7 @@ async def wait_for_images_loading(
     page,
     container_selector: str,
     image_selector: str = 'img[src]',
-    max_timeout: int = 60000,
+    max_timeout: int = 120000,
     check_interval: int = 1000
 ) -> bool:
     """

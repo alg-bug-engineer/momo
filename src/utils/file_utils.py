@@ -3,9 +3,10 @@
 """
 
 import os
+import re
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 
 def ensure_directory_exists(directory: str) -> Path:
@@ -76,15 +77,15 @@ def load_text_from_file(filepath: str) -> str:
         raise
 
 
-def extract_table_from_session(session_content: str) -> str:
+def extract_table_from_session(session_content: str) -> Tuple[str, int]:
     """
-    从session文件内容中提取表格部分
+    从session文件内容中提取表格部分，并计算宫格数量
     
     Args:
         session_content: session文件内容
         
     Returns:
-        str: 提取的表格内容
+        Tuple[str, int]: (提取的表格内容, 宫格数量)
     """
     try:
         parts = session_content.split("生成结果:")
@@ -96,8 +97,10 @@ def extract_table_from_session(session_content: str) -> str:
             result = result.strip()
             
             if result:
-                print(f"[DEBUG] ✓ 从 session 文件提取内容成功（长度: {len(result)} 字符）")
-                return result
+                # 计算宫格数量：解析表格行数
+                panel_count = count_panels_from_table(result)
+                print(f"[DEBUG] ✓ 从 session 文件提取内容成功（长度: {len(result)} 字符，宫格数量: {panel_count}）")
+                return result, panel_count
             else:
                 raise Exception("Session 文件中没有找到生成结果内容")
         else:
@@ -105,6 +108,64 @@ def extract_table_from_session(session_content: str) -> str:
     except Exception as e:
         print(f"[ERROR] 解析 session 文件失败: {e}")
         raise
+
+
+def count_panels_from_table(table_content: str) -> int:
+    """
+    从表格内容中计算宫格数量
+    
+    表格格式通常是 Markdown 表格：
+    | 格数 | 画面描述 | 台词/旁白 |
+    | :--- | :--- | :--- |
+    | 1 | ... | ... |
+    | 2 | ... | ... |
+    
+    Args:
+        table_content: 表格内容字符串
+        
+    Returns:
+        int: 宫格数量（数据行数）
+    """
+    try:
+        lines = table_content.strip().split('\n')
+        data_row_count = 0
+        
+        # 跳过表头和分隔行，统计数据行
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # 跳过表头行（通常包含"格数"、"画面描述"等关键词）
+            if '格数' in line or '画面描述' in line or '台词' in line or '旁白' in line:
+                continue
+            
+            # 跳过分隔行（包含 :--- 或类似的分隔符）
+            if re.match(r'^\|[\s:-\|]+\|$', line):
+                continue
+            
+            cells = [cell.strip() for cell in line.split(',')]
+            if cells and len(cells) > 0:
+                first_cell = cells[0].strip()
+                # 如果第一列是数字，认为是数据行
+                if first_cell.isdigit():
+                    data_row_count += 1
+    
+        # 如果通过上述方法没有找到，尝试更宽松的匹配
+        if data_row_count == 0:
+            # 查找所有包含数字的行（可能是格数）
+            for line in lines:
+                line = line.strip()
+                if line.startswith('|') and '|' in line:
+                    # 检查是否包含数字
+                    if re.search(r'\d+', line):
+                        data_row_count += 1
+        
+        return max(data_row_count, 0)  # 至少返回 0
+        
+    except Exception as e:
+        print(f"[WARNING] 计算宫格数量失败: {e}，返回默认值 0")
+        return 0
 
 
 def get_image_files(directory: str) -> List[str]:

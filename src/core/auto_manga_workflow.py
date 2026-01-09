@@ -43,6 +43,22 @@ class AutoMangaWorkflow(BrowserController):
         """构建漫画脚本生成提示词"""
         return SCRIPT_PROMPT_TEMPLATE.format(concept=self.concept)
     
+    def build_panel_generation_prompt(self, start_panel: int, end_panel: int, is_first_batch: bool = False) -> str:
+        """构建宫格生成提示词
+        
+        Args:
+            start_panel: 起始宫格编号（如 1, 5, 9）
+            end_panel: 结束宫格编号（如 4, 8, 12）
+            is_first_batch: 是否是第一批次
+            
+        Returns:
+            str: 宫格生成提示词
+        """
+        if is_first_batch:
+            return f"\n\n严格参考附件的角色形象，根据漫画脚本的内容，生成P{start_panel}-P{end_panel} 的宫格漫画图片，务必保证角色形象一致，内容于脚本一致，最终输出竖版、宫格漫画图片。"
+        else:
+            return f"同样的要求，输出 P{start_panel}-P{end_panel} 宫格的竖版、漫画图片"
+    
     async def send_message(self, query: str):
         """在输入框输入文本并发送
         
@@ -295,14 +311,14 @@ class AutoMangaWorkflow(BrowserController):
 """
         return save_text_to_file(content, filename)
     
-    def load_from_session_file(self, session_file: str) -> str:
-        """从 session 文件读取生成结果（表格内容）
+    def load_from_session_file(self, session_file: str) -> tuple:
+        """从 session 文件读取生成结果（表格内容）和宫格数量
         
         Args:
             session_file: session 文件路径
             
         Returns:
-            str: 生成结果（表格内容）
+            tuple: (生成结果（表格内容）, 宫格数量)
         """
         filepath = get_absolute_path(session_file)
         
@@ -311,8 +327,8 @@ class AutoMangaWorkflow(BrowserController):
         
         try:
             content = load_text_from_file(filepath)
-            result = extract_table_from_session(content)
-            return result
+            result, panel_count = extract_table_from_session(content)
+            return result, panel_count
         except Exception as e:
             print(f"[ERROR] 读取 session 文件失败: {e}")
             raise
@@ -539,56 +555,243 @@ class AutoMangaWorkflow(BrowserController):
             print(f"[ERROR] 发送多模态消息失败: {e}")
             raise
     
-    async def wait_for_images_generated(self) -> bool:
-        """等待图片生成完成"""
+    async def wait_for_images_generated(self, initial_image_count: int = 0, saved_image_urls: set = None) -> tuple:
+        """等待图片生成完成
+        
+        Args:
+            initial_image_count: 发送消息前的图片数量，用于检测新生成的图片
+            saved_image_urls: 已保存的图片URL集合，用于排除已保存的图片
+            
+        Returns:
+            tuple: (是否成功, 新生成的图片URL列表)
+        """
+        if saved_image_urls is None:
+            saved_image_urls = set()
+        
         print("[DEBUG] 等待图片生成...")
         
         try:
-            # 等待图片容器出现
+            # 导入ImageSaver用于URL处理
+            from src.core.image_saver import ImageSaver
+            saver = ImageSaver(self.page)
+            
+            # 等待新的响应容器出现（通过检测响应容器的数量变化）
             container_selector = '.attachment-container.generated-images'
-            await self.page.wait_for_selector(
-                container_selector,
-                timeout=RESPONSE_TIMEOUT
-            )
-            print("[DEBUG] ✓ 检测到图片容器")
             
-            # 等待至少一张图片加载完成
-            try:
-                await self.page.wait_for_selector(
-                    f'{container_selector} img.image.loaded',
-                    timeout=RESPONSE_TIMEOUT
-                )
-                print("[DEBUG] ✓ 检测到至少一张图片已加载")
-            except:
-                # 如果找不到 loaded 类，尝试查找任何图片
-                await self.page.wait_for_selector(
-                    f'{container_selector} img[src]',
-                    timeout=RESPONSE_TIMEOUT
-                )
-                print("[DEBUG] ✓ 检测到图片元素")
+            # 先等待一小段时间，确保消息已发送
+            await asyncio.sleep(1)
             
-            # 等待图片加载完成
+            # 记录开始时间
+            start_time = time.time()
+            timeout_seconds = RESPONSE_TIMEOUT / 1000.0
+            
+            # 等待新的图片容器出现（通过检测容器数量增加）
+            print(f"[DEBUG] 当前图片数量: {initial_image_count}，已保存图片数量: {len(saved_image_urls)}，等待新图片生成...")
+            
+            new_images_detected = False
+            last_container_count = 0
+            containers = []
+            new_image_urls = []
+            
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > timeout_seconds:
+                    print("[WARNING] 等待新图片生成超时")
+                    return (False, [])
+                
+                try:
+                    # 获取所有图片容器
+                    containers = await self.page.query_selector_all(container_selector)
+                    current_container_count = len(containers)
+                    
+                    # 获取所有图片的URL
+                    all_images = await self.page.query_selector_all(f'{container_selector} img[src]')
+                    current_image_count = len(all_images)
+                    
+                    # 收集当前所有图片的URL（使用处理后的URL，确保格式一致）
+                    current_image_urls = set()
+                    for img in all_images:
+                        try:
+                            img_src = await img.get_attribute('src')
+                            if img_src:
+                                # 处理URL，确保格式一致
+                                processed_url = saver._process_image_url(img_src)
+                                current_image_urls.add(processed_url)
+                        except:
+                            continue
+                    
+                    # 找出新生成的图片URL（不在已保存列表中的）
+                    new_urls = current_image_urls - saved_image_urls
+                    
+                    # 如果容器数量增加了，或者有新图片URL，说明有新的响应
+                    if current_container_count > last_container_count or len(new_urls) > 0:
+                        if current_container_count > last_container_count:
+                            print(f"[DEBUG] ✓ 检测到新的图片容器（容器数量: {last_container_count} -> {current_container_count}）")
+                            last_container_count = current_container_count
+                        
+                        if len(new_urls) > 0:
+                            print(f"[DEBUG] ✓ 检测到 {len(new_urls)} 张新图片（不在已保存列表中）")
+                            new_image_urls = list(new_urls)
+                            new_images_detected = True
+                            
+                            # 检查最新容器中的图片是否已加载
+                            if containers:
+                                latest_container = containers[-1]
+                                images_in_latest = await latest_container.query_selector_all('img[src]')
+                                if len(images_in_latest) > 0:
+                                    # 验证这些图片是否是新图片
+                                    latest_urls = set()
+                                    for img in images_in_latest:
+                                        try:
+                                            img_src = await img.get_attribute('src')
+                                            if img_src:
+                                                # 处理URL，确保格式一致
+                                                processed_url = saver._process_image_url(img_src)
+                                                if processed_url in new_urls:
+                                                    latest_urls.add(processed_url)
+                                        except:
+                                            continue
+                                    
+                                    if len(latest_urls) > 0:
+                                        print(f"[DEBUG] ✓ 最新容器中有 {len(latest_urls)} 张新图片")
+                                        break
+                    
+                    # 短暂等待后继续检查
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"[DEBUG] 检查图片状态时出错: {e}，继续等待...")
+                    await asyncio.sleep(0.5)
+            
+            if not new_images_detected or len(new_image_urls) == 0:
+                print("[WARNING] 未检测到新图片")
+                return (False, [])
+            
+            # 等待新图片加载完成
+            print("[DEBUG] 等待新图片加载完成...")
             from src.utils.browser_utils import wait_for_images_loading
+            
+            # 等待最新容器中的图片加载完成
+            if containers and len(containers) > 0:
+                # 使用最后一个容器（最新的响应）
+                try:
+                    # 通过JavaScript获取最后一个容器的选择器
+                    latest_container_index = len(containers) - 1
+                    latest_container_selector = f'{container_selector}:nth-of-type({latest_container_index + 1})'
+                except:
+                    latest_container_selector = container_selector
+            else:
+                latest_container_selector = container_selector
+            
             if await wait_for_images_loading(
                 self.page,
-                container_selector,
+                latest_container_selector,
                 max_timeout=RESPONSE_TIMEOUT
             ):
-                print("[DEBUG] ✓ 图片加载完成")
-                return True
+                print(f"[DEBUG] ✓ 新图片加载完成，共 {len(new_image_urls)} 张新图片")
+                return (True, new_image_urls)
             else:
-                print("[WARNING] 图片加载超时")
-                return False
+                print("[WARNING] 新图片加载超时")
+                return (False, [])
                 
         except Exception as e:
             print(f"[ERROR] 等待图片生成失败: {e}")
-            return False
+            return (False, [])
     
-    async def save_generated_images(self, save_dir: str = DEFAULT_IMAGES_DIR) -> List[str]:
-        """保存生成的图片到本地文件夹"""
+    async def wait_for_all_batches_completed(self, total_batches: int, saved_image_urls: set, max_wait_time: int = 300):
+        """等待所有批次生成完成
+        
+        Args:
+            total_batches: 总批次数
+            saved_image_urls: 已保存的图片URL集合（用于排除已存在的图片）
+            max_wait_time: 最大等待时间（秒）
+        """
+        print(f"[DEBUG] 等待所有 {total_batches} 个批次生成完成...")
+        
+        container_selector = '.attachment-container.generated-images'
+        start_time = time.time()
+        
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > max_wait_time:
+                print(f"[WARNING] 等待所有批次完成超时（{max_wait_time}秒）")
+                break
+            
+            try:
+                # 获取所有图片容器
+                containers = await self.page.query_selector_all(container_selector)
+                current_container_count = len(containers)
+                
+                # 获取所有图片的URL
+                from src.core.image_saver import ImageSaver
+                saver = ImageSaver(self.page)
+                all_images = await self.page.query_selector_all(f'{container_selector} img[src]')
+                
+                # 收集所有图片URL（排除已存在的）
+                current_image_urls = set()
+                for img in all_images:
+                    try:
+                        img_src = await img.get_attribute('src')
+                        if img_src:
+                            processed_url = saver._process_image_url(img_src)
+                            if processed_url not in saved_image_urls:
+                                current_image_urls.add(processed_url)
+                    except:
+                        continue
+                
+                # 检查是否所有批次都已完成（容器数量应该等于批次数）
+                if current_container_count >= total_batches:
+                    print(f"[DEBUG] ✓ 检测到 {current_container_count} 个图片容器（期望 {total_batches} 个）")
+                    
+                    # 等待所有图片加载完成
+                    from src.utils.browser_utils import wait_for_images_loading
+                    if await wait_for_images_loading(
+                        self.page,
+                        container_selector,
+                        max_timeout=RESPONSE_TIMEOUT
+                    ):
+                        print(f"[DEBUG] ✓ 所有批次图片已生成并加载完成")
+                        return
+                
+                print(f"[DEBUG] 当前容器数量: {current_container_count}/{total_batches}，继续等待...")
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                print(f"[DEBUG] 检查批次状态时出错: {e}，继续等待...")
+                await asyncio.sleep(2)
+    
+    async def save_all_images_sequentially(self, save_dir: str, total_batches: int) -> List[str]:
+        """按顺序保存所有生成的图片容器
+        
+        Args:
+            save_dir: 保存目录
+            total_batches: 总批次数（用于验证容器数量）
+            
+        Returns:
+            List[str]: 保存的文件路径列表（按顺序）
+        """
         from src.core.image_saver import ImageSaver
         saver = ImageSaver(self.page)
-        return await saver.save_all_images(save_dir)
+        return await saver.save_all_images_sequentially(save_dir, total_batches)
+    
+    async def save_generated_images(self, save_dir: str = DEFAULT_IMAGES_DIR, target_image_urls: List[str] = None) -> List[str]:
+        """保存生成的图片到本地文件夹
+        
+        Args:
+            save_dir: 保存目录
+            target_image_urls: 目标图片URL列表，如果提供则只保存这些URL对应的图片
+            
+        Returns:
+            List[str]: 保存的文件路径列表
+        """
+        from src.core.image_saver import ImageSaver
+        saver = ImageSaver(self.page)
+        if target_image_urls:
+            # 只保存指定URL的图片
+            return await saver.save_images_by_urls(save_dir, target_image_urls)
+        else:
+            # 保存所有图片（兼容旧逻辑）
+            return await saver.save_all_images(save_dir)
     
     async def run(
         self, 
@@ -616,6 +819,7 @@ class AutoMangaWorkflow(BrowserController):
             await self.open_gemini()
             
             # 步骤2: 生成脚本或从文件读取
+            panel_count = 0  # 宫格总数
             if skip_script_generation:
                 # 跳过脚本生成，直接从 session 文件读取
                 print("\n" + "="*80)
@@ -623,8 +827,8 @@ class AutoMangaWorkflow(BrowserController):
                 print("="*80)
                 if not session_file:
                     raise Exception("skip_script_generation=True 时必须提供 session_file 参数")
-                copied_content = self.load_from_session_file(session_file)
-                print("[DEBUG] ✓ 已从 session 文件读取内容")
+                copied_content, panel_count = self.load_from_session_file(session_file)
+                print(f"[DEBUG] ✓ 已从 session 文件读取内容，宫格数量: {panel_count}")
             else:
                 # 正常流程：生成脚本
                 print("\n" + "="*80)
@@ -648,6 +852,11 @@ class AutoMangaWorkflow(BrowserController):
                 print("="*80)
                 copied_content = await self.copy_table_content()
                 
+                # 计算宫格数量
+                from src.utils.file_utils import count_panels_from_table
+                panel_count = count_panels_from_table(copied_content)
+                print(f"[DEBUG] ✓ 检测到宫格数量: {panel_count}")
+                
                 # 步骤5: 保存到文件
                 print("\n" + "="*80)
                 print("步骤4: 保存结果到文件")
@@ -667,7 +876,7 @@ class AutoMangaWorkflow(BrowserController):
             print("="*80)
             await self.select_create_images_tool()
             
-            # 步骤8: 上传 demo.png 图片
+            # 步骤8: 上传 demo.png 图片（只在第一次上传）
             step_num = 7 if skip_script_generation else 7
             print("\n" + "="*80)
             print(f"步骤{step_num}: 上传 demo.png 图片")
@@ -675,32 +884,118 @@ class AutoMangaWorkflow(BrowserController):
             await self.upload_image(demo_image_path)
             await asyncio.sleep(1)  # 等待图片上传完成
             
-            # 步骤9: 构建并发送多模态消息（表格内容 + 追加文本）
-            step_num = 8 if skip_script_generation else 8
+            # 步骤9-10: 循环生成宫格图片（每4个一组）
             print("\n" + "="*80)
-            print(f"步骤{step_num}: 发送多模态消息（图片 + 表格 + 提示词）")
+            print(f"步骤{step_num + 1}: 开始循环生成宫格图片（总共 {panel_count} 个宫格）")
             print("="*80)
-            full_message = copied_content + IMAGE_GENERATION_PROMPT
-            await self.send_multimodal_message(full_message)
             
-            # 步骤10: 等待图片生成并保存
-            step_num = 9 if skip_script_generation else 9
-            print("\n" + "="*80)
-            print(f"步骤{step_num}: 等待图片生成并保存")
-            print("="*80)
-            if await self.wait_for_images_generated():
-                saved_files = await self.save_generated_images(save_dir=images_dir)
-                if saved_files:
-                    print(f"[DEBUG] ✓ 成功保存 {len(saved_files)} 张图片到 {images_dir}")
-                    for file in saved_files:
-                        print(f"  - {file}")
+            # 计算需要生成的批次数量（每4个一组）
+            total_batches = (panel_count + 3) // 4  # 向上取整
+            print(f"[INFO] 需要生成 {total_batches} 批次，每批次 4 个宫格")
+            
+            # 在循环开始前，收集所有现有图片的URL（这些是上传的demo图片等，不应该被保存）
+            saved_image_urls = set()
+            container_selector = '.attachment-container.generated-images'
+            try:
+                from src.core.image_saver import ImageSaver
+                saver = ImageSaver(self.page)
+                existing_images = await self.page.query_selector_all(f'{container_selector} img[src]')
+                for img in existing_images:
+                    try:
+                        img_src = await img.get_attribute('src')
+                        if img_src:
+                            processed_url = saver._process_image_url(img_src)
+                            saved_image_urls.add(processed_url)
+                    except:
+                        continue
+                print(f"[DEBUG] 循环开始前，已收集 {len(saved_image_urls)} 个现有图片URL（这些图片不会被保存）")
+            except:
+                print("[DEBUG] 无法收集现有图片URL，使用空集合")
+            
+            # 第一阶段：发送所有批次的生成请求，只等待生成完成，不立即保存
+            print("\n" + "-"*80)
+            print("第一阶段：发送所有批次的生成请求")
+            print("-"*80)
+            
+            for batch_index in range(total_batches):
+                # 计算当前批次的宫格范围
+                start_panel = batch_index * 4 + 1
+                end_panel = min((batch_index + 1) * 4, panel_count)
+                
+                print("\n" + "-"*80)
+                print(f"批次 {batch_index + 1}/{total_batches}: 生成 P{start_panel}-P{end_panel} 宫格")
+                print("-"*80)
+                
+                # 构建提示词
+                if batch_index == 0:
+                    # 第一次：使用表格内容 + 提示词
+                    panel_prompt = self.build_panel_generation_prompt(start_panel, end_panel, is_first_batch=True)
+                    full_message = copied_content + panel_prompt
                 else:
-                    print("[WARNING] 未保存任何图片")
+                    # 后续批次：只发送提示词（表格内容和图片已经在第一次发送了，保留在对话历史中）
+                    panel_prompt = self.build_panel_generation_prompt(start_panel, end_panel, is_first_batch=False)
+                    full_message = panel_prompt
+                
+                # 发送消息前，记录当前图片数量（用于检测新生成的图片）
+                try:
+                    existing_images = await self.page.query_selector_all(f'{container_selector} img[src]')
+                    initial_image_count = len(existing_images)
+                    print(f"[DEBUG] 发送消息前，当前图片数量: {initial_image_count}")
+                except:
+                    initial_image_count = 0
+                    print("[DEBUG] 无法获取当前图片数量，使用默认值 0")
+                
+                # 发送消息（第一次使用多模态，后续批次只发送文本）
+                print(f"[DEBUG] 发送生成请求: P{start_panel}-P{end_panel}")
+                if batch_index == 0:
+                    # 第一次：需要包含图片和表格，使用多模态消息
+                    await self.send_multimodal_message(full_message)
+                else:
+                    # 后续批次：只发送文本提示词（图片和表格已在对话历史中）
+                    await self.send_message(full_message)
+                
+                # 等待当前批次的图片生成完成（不保存）
+                print(f"[DEBUG] 等待批次 {batch_index + 1} 图片生成...")
+                success, new_image_urls = await self.wait_for_images_generated(
+                    initial_image_count=initial_image_count,
+                    saved_image_urls=saved_image_urls
+                )
+                
+                if success and len(new_image_urls) > 0:
+                    # 将新生成的图片URL加入已保存列表（用于后续批次检测）
+                    saved_image_urls.update(new_image_urls)
+                    print(f"[DEBUG] ✓ 批次 {batch_index + 1} 图片生成完成，检测到 {len(new_image_urls)} 张新图片")
+                elif success:
+                    print(f"[WARNING] 批次 {batch_index + 1} 图片生成成功，但未检测到新图片URL")
+                else:
+                    print(f"[WARNING] 批次 {batch_index + 1} (P{start_panel}-P{end_panel}) 图片生成超时或失败")
+                
+                # 如果不是最后一批，等待一下再继续
+                if batch_index < total_batches - 1:
+                    print(f"[DEBUG] 等待 2 秒后继续下一批次...")
+                    await asyncio.sleep(2)
+            
+            # 第二阶段：等待所有批次生成完成
+            print("\n" + "="*80)
+            print("第二阶段：等待所有批次生成完成")
+            print("="*80)
+            await self.wait_for_all_batches_completed(total_batches, saved_image_urls)
+            
+            # 第三阶段：统一检测所有图片容器，按顺序下载保存
+            print("\n" + "="*80)
+            print("第三阶段：统一检测并顺序保存所有图片")
+            print("="*80)
+            saved_files = await self.save_all_images_sequentially(images_dir, total_batches)
+            
+            if saved_files:
+                print(f"[DEBUG] ✓ 成功保存 {len(saved_files)} 张图片到 {images_dir}")
+                for idx, file in enumerate(saved_files, 1):
+                    print(f"  {idx}. {file}")
             else:
-                print("[WARNING] 图片生成超时或失败")
+                print("[WARNING] 未保存任何图片")
             
             print("\n" + "="*80)
-            print("✓ 工作流完成！")
+            print(f"✓ 工作流完成！共生成 {total_batches} 批次，{panel_count} 个宫格")
             print("="*80)
             
         except Exception as e:
