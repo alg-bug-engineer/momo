@@ -6,6 +6,10 @@ import asyncio
 import time
 from typing import List, Optional
 
+# 获取默认日志记录器
+from src.utils.logger import get_logger
+logger = get_logger()
+
 
 async def find_working_selector(page, selectors: List[str], timeout: int = 10000) -> Optional[str]:
     """
@@ -24,10 +28,10 @@ async def find_working_selector(page, selectors: List[str], timeout: int = 10000
             await page.wait_for_selector(selector, timeout=timeout // 10)
             element = await page.query_selector(selector)
             if element and await element.is_visible():
-                print(f"[DEBUG] ✓ 选择器有效: {selector}")
+                logger.debug(f"✓ 选择器有效: {selector}")
                 return selector
         except:
-            print(f"[DEBUG] ✗ 选择器无效: {selector}")
+            logger.debug(f"✗ 选择器无效: {selector}")
             continue
     
     return None
@@ -60,7 +64,7 @@ async def wait_for_content_stabilization(
     while True:
         elapsed = time.time() - start_time
         if elapsed > max_timeout / 1000.0:
-            print("[WARNING] 等待内容稳定超时")
+            logger.warning("等待内容稳定超时")
             return False
         
         try:
@@ -74,7 +78,7 @@ async def wait_for_content_stabilization(
             if current_text == last_text:
                 current_stable_count += 1
                 if current_stable_count >= stable_count:
-                    print("[DEBUG] ✓ 内容已稳定")
+                    logger.debug("✓ 内容已稳定")
                     return True
             else:
                 current_stable_count = 0
@@ -83,7 +87,7 @@ async def wait_for_content_stabilization(
             await asyncio.sleep(check_interval / 1000.0)
             
         except Exception as e:
-            print(f"[DEBUG] 检查内容状态时出错: {e}，继续等待...")
+            logger.debug(f"检查内容状态时出错: {e}，继续等待...")
             await asyncio.sleep(check_interval / 1000.0)
 
 
@@ -113,7 +117,7 @@ async def wait_for_images_loading(
     while True:
         elapsed = time.time() - start_time
         if elapsed > timeout_seconds:
-            print("[WARNING] 等待图片加载超时")
+            logger.warning("等待图片加载超时")
             return False
         
         try:
@@ -129,7 +133,7 @@ async def wait_for_images_loading(
             
             # 如果检测到已加载的图片，即使 loader 还在也认为完成
             if loaded_images_count > 0:
-                print(f"[DEBUG] ✓ 检测到 {loaded_images_count} 张图片已加载完成")
+                logger.debug(f"✓ 检测到 {loaded_images_count} 张图片已加载完成")
                 return True
             
             # 如果有图片但还没加载完成，继续等待
@@ -138,10 +142,10 @@ async def wait_for_images_loading(
                     f'{container_selector} .loader'
                 ).count()
                 if loader_count == 0:
-                    print("[DEBUG] ✓ 所有 loader 已消失")
+                    logger.debug("✓ 所有 loader 已消失")
                     return True
                 else:
-                    print(f"[DEBUG] 检测到 {all_images_count} 张图片，还有 {loader_count} 个 loader，继续等待...")
+                    logger.debug(f"检测到 {all_images_count} 张图片，还有 {loader_count} 个 loader，继续等待...")
             else:
                 # 没有图片，继续等待
                 pass
@@ -149,7 +153,7 @@ async def wait_for_images_loading(
             await asyncio.sleep(check_interval / 1000.0)
             
         except Exception as e:
-            print(f"[DEBUG] 检查图片状态时出错: {e}，继续等待...")
+            logger.debug(f"检查图片状态时出错: {e}，继续等待...")
             await asyncio.sleep(check_interval / 1000.0)
 
 
@@ -179,13 +183,13 @@ async def verify_upload(
                     is_visible = await attachment.is_visible()
                     if is_visible:
                         src = await attachment.get_attribute('src')
-                        print(f"[DEBUG] ✓ 检测到图片附件: {selector}")
-                        print(f"[DEBUG]   图片 src: {src[:100] if src else 'N/A'}")
+                        logger.debug(f"✓ 检测到图片附件: {selector}")
+                        logger.debug(f"  图片 src: {src[:100] if src else 'N/A'}")
                         return True
             except:
                 continue
         
         await asyncio.sleep(0.5)
     
-    print("[DEBUG] ✗ 未检测到图片附件")
+    logger.debug("✗ 未检测到图片附件")
     return False

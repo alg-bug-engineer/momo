@@ -8,6 +8,10 @@ import time
 from pathlib import Path
 from typing import List, Tuple
 
+# 获取默认日志记录器
+from src.utils.logger import get_logger
+logger = get_logger()
+
 
 def ensure_directory_exists(directory: str) -> Path:
     """
@@ -46,10 +50,10 @@ def save_text_to_file(content: str, filename: str = None, directory: str = 'data
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
-        print(f"[DEBUG] ✓ 文件已保存到: {filepath.absolute()}")
+        logger.debug(f"✓ 文件已保存到: {filepath.absolute()}")
         return str(filepath.absolute())
     except Exception as e:
-        print(f"[ERROR] 保存文件失败: {e}")
+        logger.error(f"保存文件失败: {e}")
         raise
 
 
@@ -73,7 +77,7 @@ def load_text_from_file(filepath: str) -> str:
             content = f.read()
         return content
     except Exception as e:
-        print(f"[ERROR] 读取文件失败: {e}")
+        logger.error(f"读取文件失败: {e}")
         raise
 
 
@@ -99,14 +103,14 @@ def extract_table_from_session(session_content: str) -> Tuple[str, int]:
             if result:
                 # 计算宫格数量：解析表格行数
                 panel_count = count_panels_from_table(result)
-                print(f"[DEBUG] ✓ 从 session 文件提取内容成功（长度: {len(result)} 字符，宫格数量: {panel_count}）")
+                logger.debug(f"✓ 从 session 文件提取内容成功（长度: {len(result)} 字符，宫格数量: {panel_count}）")
                 return result, panel_count
             else:
                 raise Exception("Session 文件中没有找到生成结果内容")
         else:
             raise Exception("Session 文件格式不正确，未找到'生成结果'部分")
     except Exception as e:
-        print(f"[ERROR] 解析 session 文件失败: {e}")
+        logger.error(f"解析 session 文件失败: {e}")
         raise
 
 
@@ -143,7 +147,7 @@ def count_panels_from_table(table_content: str) -> int:
         return max(data_row_count, 0)  # 至少返回 0
         
     except Exception as e:
-        print(f"[WARNING] 计算宫格数量失败: {e}，返回默认值 0")
+        logger.warning(f"计算宫格数量失败: {e}，返回默认值 0")
         return 0
 
 

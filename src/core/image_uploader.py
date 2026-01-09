@@ -9,13 +9,16 @@ from typing import List
 from src.config.settings import SELECTORS, UPLOAD_TIMEOUT
 from src.utils.browser_utils import verify_upload
 from src.utils.file_utils import get_absolute_path
+from src.utils.logger import get_logger
 
 
 class ImageUploader:
     """图片上传类"""
     
-    def __init__(self, page):
+    def __init__(self, page, session_id=None):
         self.page = page
+        self.session_id = session_id
+        self.logger = get_logger(session_id)
     
     async def upload_with_filechooser(self, image_path: str) -> bool:
         """
@@ -28,15 +31,15 @@ class ImageUploader:
         if not os.path.exists(abs_image_path):
             raise Exception(f"图片文件不存在: {abs_image_path}")
         
-        print(f"[DEBUG] 图片绝对路径: {abs_image_path}")
+        self.logger.debug(f"图片绝对路径: {abs_image_path}")
         
         try:
             # 步骤1: 设置文件选择器监听器(在点击之前!)
-            print("[DEBUG] 步骤1: 设置文件选择器监听器...")
+            self.logger.debug("步骤1: 设置文件选择器监听器...")
             
             async with self.page.expect_file_chooser(timeout=UPLOAD_TIMEOUT) as fc_info:
                 # 步骤2: 找到并点击上传按钮
-                print("[DEBUG] 步骤2: 查找并点击上传按钮...")
+                self.logger.debug("步骤2: 查找并点击上传按钮...")
                 from src.utils.browser_utils import find_working_selector
                 
                 upload_button = None
@@ -44,7 +47,7 @@ class ImageUploader:
                     try:
                         upload_button = await self.page.wait_for_selector(selector, timeout=5000)
                         if upload_button and await upload_button.is_visible():
-                            print(f"[DEBUG]   ✓ 找到上传按钮: {selector}")
+                            self.logger.debug(f"  ✓ 找到上传按钮: {selector}")
                             break
                     except:
                         continue
@@ -56,13 +59,13 @@ class ImageUploader:
                 await asyncio.sleep(1)
                 
                 # 步骤3: 点击 "Upload files" 选项
-                print("[DEBUG] 步骤3: 查找并点击 'Upload files' 选项...")
+                self.logger.debug("步骤3: 查找并点击 'Upload files' 选项...")
                 upload_files = None
                 for selector in SELECTORS["upload_files"]:
                     try:
                         upload_files = await self.page.wait_for_selector(selector, timeout=3000)
                         if upload_files and await upload_files.is_visible():
-                            print(f"[DEBUG]   ✓ 找到 'Upload files' 选项: {selector}")
+                            self.logger.debug(f"  ✓ 找到 'Upload files' 选项: {selector}")
                             break
                     except:
                         continue
@@ -74,12 +77,12 @@ class ImageUploader:
             
             # 步骤4: 监听器会自动捕获文件选择对话框,设置文件
             file_chooser = await fc_info.value
-            print(f"[DEBUG] 步骤4: 捕获到文件选择器,设置文件...")
+            self.logger.debug(f"步骤4: 捕获到文件选择器,设置文件...")
             await file_chooser.set_files(abs_image_path)
-            print(f"[DEBUG]   ✓ 文件已设置: {abs_image_path}")
+            self.logger.debug(f"  ✓ 文件已设置: {abs_image_path}")
             
             # 步骤5: 等待并验证上传
-            print("[DEBUG] 步骤5: 验证上传结果...")
+            self.logger.debug("步骤5: 验证上传结果...")
             await asyncio.sleep(2)
             
             attachment_selectors = [
@@ -102,14 +105,14 @@ class ImageUploader:
             uploaded = await verify_upload(self.page, attachment_selectors, timeout=10)
             
             if uploaded:
-                print("[DEBUG] ✓ 策略1成功: 文件上传成功!")
+                self.logger.debug("✓ 策略1成功: 文件上传成功!")
                 return True
             else:
-                print("[DEBUG] ✗ 策略1失败: 未检测到上传结果")
+                self.logger.debug("✗ 策略1失败: 未检测到上传结果")
                 return False
                 
         except Exception as e:
-            print(f"[DEBUG] ✗ 策略1失败: {e}")
+            self.logger.debug(f"✗ 策略1失败: {e}")
             return False
     
     async def upload_with_real_input(self, image_path: str) -> bool:
@@ -123,7 +126,7 @@ class ImageUploader:
         
         try:
             # 步骤1: 点击上传按钮,激活文件输入框
-            print("[DEBUG] 步骤1: 点击上传按钮...")
+            self.logger.debug("步骤1: 点击上传按钮...")
             from src.utils.browser_utils import find_working_selector
             
             upload_button = None
@@ -131,7 +134,7 @@ class ImageUploader:
                 try:
                     upload_button = await self.page.wait_for_selector(selector, timeout=10000)
                     if upload_button and await upload_button.is_visible():
-                        print(f"[DEBUG]   ✓ 找到上传按钮: {selector}")
+                        self.logger.debug(f"  ✓ 找到上传按钮: {selector}")
                         break
                 except:
                     continue
@@ -143,12 +146,12 @@ class ImageUploader:
             await asyncio.sleep(1)
             
             # 步骤2: 查找所有文件输入框(包括隐藏的)
-            print("[DEBUG] 步骤2: 查找所有文件输入框...")
+            self.logger.debug("步骤2: 查找所有文件输入框...")
             all_inputs = await self.page.query_selector_all('input[type="file"]')
-            print(f"[DEBUG]   找到 {len(all_inputs)} 个文件输入框")
+            self.logger.debug(f"  找到 {len(all_inputs)} 个文件输入框")
             
             if len(all_inputs) == 0:
-                print("[DEBUG] ✗ 未找到任何文件输入框")
+                self.logger.debug("✗ 未找到任何文件输入框")
                 return False
             
             # 步骤3: 尝试每个输入框
@@ -159,12 +162,12 @@ class ImageUploader:
                     # 检查输入框是否可用
                     is_disabled = await file_input.get_attribute('disabled')
                     if is_disabled:
-                        print(f"[DEBUG]   输入框 {i} 被禁用,跳过")
+                        self.logger.debug(f"  输入框 {i} 被禁用,跳过")
                         continue
                     
                     # 获取输入框信息
                     accept = await file_input.get_attribute('accept')
-                    print(f"[DEBUG]   输入框 {i} accept 属性: {accept}")
+                    self.logger.debug(f"  输入框 {i} accept 属性: {accept}")
                     
                     # 使用 JavaScript 确保输入框可交互
                     await self.page.evaluate("""
@@ -178,7 +181,7 @@ class ImageUploader:
                     """, file_input)
                     
                     # 设置文件
-                    print(f"[DEBUG]   设置文件到输入框 {i}...")
+                    self.logger.debug(f"  设置文件到输入框 {i}...")
                     await file_input.set_input_files(abs_image_path)
                     
                     # 手动触发所有相关事件
@@ -198,7 +201,7 @@ class ImageUploader:
                         }
                     """, file_input)
                     
-                    print(f"[DEBUG]   ✓ 文件已设置并触发事件")
+                    self.logger.debug(f"  ✓ 文件已设置并触发事件")
                     
                     # 等待并验证上传
                     await asyncio.sleep(2)
@@ -220,20 +223,20 @@ class ImageUploader:
                     ]
                     
                     if await verify_upload(self.page, attachment_selectors, timeout=8):
-                        print(f"[DEBUG] ✓ 策略2成功: 输入框 {i} 上传成功!")
+                        self.logger.debug(f"✓ 策略2成功: 输入框 {i} 上传成功!")
                         return True
                     else:
-                        print(f"[DEBUG]   输入框 {i} 未检测到上传结果,继续尝试...")
+                        self.logger.debug(f"  输入框 {i} 未检测到上传结果,继续尝试...")
                         
                 except Exception as e:
-                    print(f"[DEBUG]   输入框 {i} 失败: {e}")
+                    self.logger.debug(f"  输入框 {i} 失败: {e}")
                     continue
             
-            print("[DEBUG] ✗ 策略2失败: 所有输入框尝试失败")
+            self.logger.debug("✗ 策略2失败: 所有输入框尝试失败")
             return False
             
         except Exception as e:
-            print(f"[DEBUG] ✗ 策略2失败: {e}")
+            self.logger.debug(f"✗ 策略2失败: {e}")
             return False
     
     async def upload_with_drag_drop(self, image_path: str) -> bool:
@@ -247,7 +250,7 @@ class ImageUploader:
         
         try:
             # 步骤1: 查找上传区域或输入框
-            print("[DEBUG] 步骤1: 查找拖放区域...")
+            self.logger.debug("步骤1: 查找拖放区域...")
             drop_zone_selectors = [
                 '.upload-card-button',
                 '[class*="upload"]',
@@ -261,24 +264,24 @@ class ImageUploader:
                 try:
                     drop_zone = await self.page.query_selector(selector)
                     if drop_zone:
-                        print(f"[DEBUG]   ✓ 找到拖放区域: {selector}")
+                        self.logger.debug(f"  ✓ 找到拖放区域: {selector}")
                         break
                 except:
                     continue
             
             if not drop_zone:
-                print("[DEBUG] ✗ 未找到拖放区域")
+                self.logger.debug("✗ 未找到拖放区域")
                 return False
             
             # 步骤2: 读取文件内容
-            print("[DEBUG] 步骤2: 读取文件内容...")
+            self.logger.debug("步骤2: 读取文件内容...")
             with open(abs_image_path, 'rb') as f:
                 file_content = f.read()
             
-            print(f"[DEBUG]   文件大小: {len(file_content)} bytes")
+            self.logger.debug(f"  文件大小: {len(file_content)} bytes")
             
             # 步骤3: 使用 JavaScript 模拟拖放事件
-            print("[DEBUG] 步骤3: 模拟拖放事件...")
+            self.logger.debug("步骤3: 模拟拖放事件...")
             
             # 获取文件名
             file_name = os.path.basename(abs_image_path)
@@ -320,7 +323,7 @@ class ImageUploader:
                 'fileContent': list(file_content)
             })
             
-            print("[DEBUG]   ✓ 拖放事件已触发")
+            self.logger.debug("  ✓ 拖放事件已触发")
             
             # 步骤4: 验证上传
             await asyncio.sleep(2)
@@ -342,14 +345,14 @@ class ImageUploader:
             ]
             
             if await verify_upload(self.page, attachment_selectors, timeout=10):
-                print("[DEBUG] ✓ 策略3成功: 拖拽上传成功!")
+                self.logger.debug("✓ 策略3成功: 拖拽上传成功!")
                 return True
             else:
-                print("[DEBUG] ✗ 策略3失败: 未检测到上传结果")
+                self.logger.debug("✗ 策略3失败: 未检测到上传结果")
                 return False
                 
         except Exception as e:
-            print(f"[DEBUG] ✗ 策略3失败: {e}")
+            self.logger.debug(f"✗ 策略3失败: {e}")
             return False
     
     async def upload_with_strategies(self, image_path: str) -> bool:
@@ -388,7 +391,7 @@ class ImageUploader:
                     
             except Exception as e:
                 print(f"\n[ERROR] 策略 '{strategy_name}' 出错: {e}")
-                print("[INFO] 尝试下一个策略...\n")
+                self.logger.info("尝试下一个策略...\n")
                 continue
         
         # 所有策略都失败

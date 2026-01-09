@@ -30,17 +30,20 @@ from src.utils.file_utils import (
     get_absolute_path,
     get_file_size
 )
+from src.utils.logger import get_logger
 
 
 class AutoMangaWorkflow(BrowserController):
     """自动漫画生成工作流控制器"""
     
-    def __init__(self, concept: str = "大模型领域的幻觉"):
+    def __init__(self, concept: str = "大模型领域的幻觉", session_id: str = None):
         super().__init__()
         self.concept = concept
+        self.session_id = session_id
         self.copied_table_content = None
         self.theme_name = None  # 主题名称
         self.theme_dir = None  # 主题文件夹路径
+        self.logger = get_logger(session_id)
     
     def build_script_prompt(self) -> str:
         """构建漫画脚本生成提示词"""
@@ -68,7 +71,7 @@ class AutoMangaWorkflow(BrowserController):
         Returns:
             str: 主题名称
         """
-        print("[DEBUG] 开始生成主题名称...")
+        self.logger.debug("开始生成主题名称...")
         
         # 构建主题生成提示词
         theme_prompt = f"""请基于以下AI概念，生成一个简洁、有趣的漫画主题名称（类似"强化学习求生记"这样的格式）。
@@ -117,7 +120,7 @@ class AutoMangaWorkflow(BrowserController):
                     if len(theme_name) > 20:
                         theme_name = theme_name[:20]
                     
-                    print(f"[DEBUG] ✓ 生成的主题名称: {theme_name}")
+                    self.logger.debug(f"生成的主题名称: {theme_name}")
                     return theme_name
                 else:
                     raise Exception("未获取到响应内容")
@@ -125,7 +128,7 @@ class AutoMangaWorkflow(BrowserController):
                 raise Exception("等待响应超时")
                 
         except Exception as e:
-            print(f"[WARNING] 生成主题名称失败: {e}，使用默认主题名称")
+            self.logger.warning(f"生成主题名称失败: {e}，使用默认主题名称")
             # 如果生成失败，使用概念名作为默认主题
             default_theme = self.concept.replace('的', '').replace('领域', '').strip()
             if len(default_theme) > 10:
@@ -134,7 +137,7 @@ class AutoMangaWorkflow(BrowserController):
             return default_theme
     
     def create_theme_directory(self, theme_name: str) -> str:
-        """创建主题文件夹
+        """创建主题文件夹，如果已存在则自动递增
         
         Args:
             theme_name: 主题名称
@@ -149,12 +152,27 @@ class AutoMangaWorkflow(BrowserController):
         
         # 构建主题文件夹路径
         base_images_dir = get_absolute_path(DEFAULT_IMAGES_DIR)
-        theme_dir = os.path.join(base_images_dir, safe_theme_name)
+        original_theme_dir = os.path.join(base_images_dir, safe_theme_name)
+        theme_dir = original_theme_dir
         
+        # 检查文件夹是否存在，如果存在则递增名称
+        counter = 1
+        while os.path.exists(theme_dir):
+            self.logger.debug(f"文件夹已存在: {theme_dir}")
+            # 尝试添加数字后缀
+            new_name = f"{safe_theme_name}{counter}"
+            theme_dir = os.path.join(base_images_dir, new_name)
+            counter += 1
+            
         # 创建文件夹
         Path(theme_dir).mkdir(parents=True, exist_ok=True)
         
-        print(f"[DEBUG] ✓ 主题文件夹已创建: {theme_dir}")
+        # 如果使用了递增名称，记录日志
+        if theme_dir != original_theme_dir:
+            self.logger.info(f"原文件夹 {original_theme_dir} 已存在，创建了新文件夹: {theme_dir}")
+        else:
+            self.logger.debug(f"主题文件夹已创建: {theme_dir}")
+        
         return theme_dir
     
     async def send_message(self, query: str):
@@ -162,7 +180,7 @@ class AutoMangaWorkflow(BrowserController):
         
         使用 JavaScript 直接设置内容，避免打字机模式导致的换行触发发送问题
         """
-        print(f"[DEBUG] 准备发送消息: {query[:100]}...")
+        self.logger.debug(f"准备发送消息: {query[:100]}...")
         
         try:
             # 查找输入框
@@ -181,12 +199,12 @@ class AutoMangaWorkflow(BrowserController):
                 raise Exception("无法找到输入框元素")
             
             # 点击输入框获得焦点
-            print("[DEBUG] 点击输入框...")
+            self.logger.debug("点击输入框...")
             await input_element.click()
             await asyncio.sleep(0.3)
             
             # 方法1: 使用 JavaScript 直接设置内容（推荐，避免换行触发发送）
-            print("[DEBUG] 使用 JavaScript 直接设置内容...")
+            self.logger.debug("使用 JavaScript 直接设置内容...")
             try:
                 # 使用 JavaScript 直接设置 contenteditable 元素的内容
                 await self.page.evaluate(
@@ -219,13 +237,13 @@ class AutoMangaWorkflow(BrowserController):
                 )
                 
                 await asyncio.sleep(0.5)  # 等待内容设置完成
-                print("[DEBUG] ✓ 内容已通过 JavaScript 设置")
+                self.logger.debug("✓ 内容已通过 JavaScript 设置")
                 
             except Exception as js_error:
-                print(f"[WARNING] JavaScript 设置内容失败: {js_error}，尝试备用方案...")
+                self.logger.warning(f"JavaScript 设置内容失败: {js_error}，尝试备用方案...")
                 
                 # 方法2: 备用方案 - 使用剪贴板粘贴（避免打字机模式）
-                print("[DEBUG] 使用剪贴板粘贴方式...")
+                self.logger.debug("使用剪贴板粘贴方式...")
                 # 清空输入框
                 await self.page.keyboard.press('Meta+a')
                 await asyncio.sleep(0.1)
@@ -243,7 +261,7 @@ class AutoMangaWorkflow(BrowserController):
                 await asyncio.sleep(0.3)
                 await self.page.keyboard.press('Control+v')
                 await asyncio.sleep(0.5)  # 等待粘贴完成
-                print("[DEBUG] ✓ 内容已通过剪贴板粘贴")
+                self.logger.debug("✓ 内容已通过剪贴板粘贴")
             
             # 验证内容是否已正确设置（可选）
             try:
@@ -255,14 +273,14 @@ class AutoMangaWorkflow(BrowserController):
                 """, selector)
                 
                 if current_content.strip():
-                    print(f"[DEBUG] ✓ 验证：输入框内容长度 {len(current_content)} 字符")
+                    self.logger.debug(f"✓ 验证：输入框内容长度 {len(current_content)} 字符")
                 else:
-                    print("[WARNING] 输入框内容为空，可能设置失败")
+                    self.logger.warning("输入框内容为空，可能设置失败")
             except:
                 pass  # 验证失败不影响主流程
             
             # 点击发送按钮发送消息
-            print("[DEBUG] 查找并点击发送按钮...")
+            self.logger.debug("查找并点击发送按钮...")
             send_button_selector = await find_working_selector(
                 self.page,
                 SELECTORS["send_button"],
@@ -271,13 +289,13 @@ class AutoMangaWorkflow(BrowserController):
             
             if not send_button_selector:
                 # 如果找不到发送按钮，尝试按回车作为备用方案
-                print("[WARNING] 无法定位发送按钮，尝试按回车发送...")
+                self.logger.warning("无法定位发送按钮，尝试按回车发送...")
                 await self.page.keyboard.press('Enter')
             else:
                 # 获取发送按钮元素
                 send_button = await self.page.query_selector(send_button_selector)
                 if not send_button:
-                    print("[WARNING] 无法获取发送按钮元素，尝试按回车发送...")
+                    self.logger.warning("无法获取发送按钮元素，尝试按回车发送...")
                     await self.page.keyboard.press('Enter')
                 else:
                     # 检查按钮是否可用（不是 disabled）
@@ -289,24 +307,24 @@ class AutoMangaWorkflow(BrowserController):
                     """, send_button_selector)
                     
                     if is_disabled:
-                        print("[WARNING] 发送按钮不可用，尝试按回车发送...")
+                        self.logger.warning("发送按钮不可用，尝试按回车发送...")
                         await self.page.keyboard.press('Enter')
                     else:
-                        print(f"[DEBUG] ✓ 找到发送按钮: {send_button_selector}")
+                        self.logger.debug(f"✓ 找到发送按钮: {send_button_selector}")
                         await send_button.click()
                         await asyncio.sleep(0.5)  # 等待发送完成
-                        print("[DEBUG] ✓ 已点击发送按钮")
+                        self.logger.debug("✓ 已点击发送按钮")
             
             await asyncio.sleep(0.5)  # 额外等待确保发送完成
-            print("[DEBUG] 消息已发送")
+            self.logger.debug("消息已发送")
             
         except Exception as e:
-            print(f"[ERROR] 发送消息失败: {e}")
+            self.logger.error(f"发送消息失败: {e}")
             raise
     
     async def wait_for_response(self) -> bool:
         """等待 Gemini 生成响应完成"""
-        print("[DEBUG] 等待响应生成...")
+        self.logger.debug("等待响应生成...")
         
         try:
             # 等待响应开始（检测到响应容器）
@@ -314,7 +332,7 @@ class AutoMangaWorkflow(BrowserController):
                 '.response-container, .model-response, [data-test-id="model-response"]',
                 timeout=RESPONSE_TIMEOUT
             )
-            print("[DEBUG] ✓ 检测到响应容器")
+            self.logger.debug("✓ 检测到响应容器")
             
             # 等待响应完成
             response_selector = '.response-container, .model-response, [data-test-id="model-response"]'
@@ -323,75 +341,75 @@ class AutoMangaWorkflow(BrowserController):
                 response_selector,
                 max_timeout=RESPONSE_TIMEOUT
             ):
-                print("[DEBUG] ✓ 响应内容已稳定，生成完成")
+                self.logger.debug("✓ 响应内容已稳定，生成完成")
             else:
-                print("[WARNING] 等待响应内容稳定超时")
+                self.logger.warning("等待响应内容稳定超时")
             
             # 额外等待一下，确保表格完全渲染
             await asyncio.sleep(2)
-            print("[DEBUG] ✓ 响应生成完成")
+            self.logger.debug("✓ 响应生成完成")
             
             return True
             
         except Exception as e:
-            print(f"[ERROR] 等待响应失败: {e}")
+            self.logger.error(f"等待响应失败: {e}")
             return False
     
     async def copy_table_content(self) -> str:
         """找到并点击复制表格按钮，获取复制的内容"""
-        print("[DEBUG] 准备复制表格内容...")
+        self.logger.debug("准备复制表格内容...")
         
         try:
             # 尝试多种选择器定位复制按钮
             copy_button = None
             for selector in SELECTORS["copy_button"]:
                 try:
-                    print(f"[DEBUG] 尝试定位复制按钮: {selector}")
+                    self.logger.debug(f"尝试定位复制按钮: {selector}")
                     # 等待按钮出现
                     await self.page.wait_for_selector(selector, timeout=5000)
                     copy_button = await self.page.query_selector(selector)
                     if copy_button:
-                        print(f"[DEBUG] ✓ 找到复制按钮: {selector}")
+                        self.logger.debug(f"✓ 找到复制按钮: {selector}")
                         break
                 except:
                     # 如果直接选择器失败，尝试通过父元素查找
                     try:
                         copy_button = await self.page.query_selector('button:has(mat-icon[fonticon="content_copy"])')
                         if copy_button:
-                            print(f"[DEBUG] ✓ 通过父元素找到复制按钮")
+                            self.logger.debug(f"✓ 通过父元素找到复制按钮")
                             break
                     except:
                         continue
             
             if not copy_button:
                 # 最后尝试：通过文本内容查找
-                print("[DEBUG] 尝试通过文本内容查找复制按钮...")
+                self.logger.debug("尝试通过文本内容查找复制按钮...")
                 copy_button_element = await self.page.locator('button:has-text("Copy table")').first
                 if await copy_button_element.count() > 0:
-                    print("[DEBUG] ✓ 通过文本定位找到复制按钮")
+                    self.logger.debug("✓ 通过文本定位找到复制按钮")
                     copy_button = copy_button_element
                 else:
                     raise Exception("无法定位到复制按钮")
             
             # 点击复制按钮
-            print("[DEBUG] 点击复制按钮...")
+            self.logger.debug("点击复制按钮...")
             await copy_button.click()
             await asyncio.sleep(1)  # 等待复制操作完成
             
             # 从剪贴板获取内容
-            print("[DEBUG] 从剪贴板获取内容...")
+            self.logger.debug("从剪贴板获取内容...")
             copied_content = pyperclip.paste()
             
             if copied_content:
                 self.copied_table_content = copied_content
-                print(f"[DEBUG] ✓ 成功复制表格内容（长度: {len(copied_content)} 字符）")
-                print(f"[DEBUG] 内容预览: {copied_content[:200]}...")
+                self.logger.debug(f"✓ 成功复制表格内容（长度: {len(copied_content)} 字符）")
+                self.logger.debug(f"内容预览: {copied_content[:200]}...")
                 return copied_content
             else:
                 raise Exception("剪贴板内容为空")
             
         except Exception as e:
-            print(f"[ERROR] 复制表格失败: {e}")
+            self.logger.error(f"复制表格失败: {e}")
             raise
     
     def save_to_file(self, query: str, response: str, filename: str = None) -> str:
@@ -428,12 +446,12 @@ class AutoMangaWorkflow(BrowserController):
             result, panel_count = extract_table_from_session(content)
             return result, panel_count
         except Exception as e:
-            print(f"[ERROR] 读取 session 文件失败: {e}")
+            self.logger.error(f"读取 session 文件失败: {e}")
             raise
     
     async def click_new_chat(self):
         """点击 New chat 按钮打开新聊天窗口"""
-        print("[DEBUG] 准备打开新聊天窗口...")
+        self.logger.debug("准备打开新聊天窗口...")
         
         try:
             # 查找 New chat 按钮
@@ -445,10 +463,10 @@ class AutoMangaWorkflow(BrowserController):
             
             if not new_chat_selector:
                 # 尝试通过文本内容查找
-                print("[DEBUG] 尝试通过文本内容查找 New chat 按钮...")
+                self.logger.debug("尝试通过文本内容查找 New chat 按钮...")
                 new_chat_element = await self.page.locator('a:has-text("New chat")').first
                 if await new_chat_element.count() > 0:
-                    print("[DEBUG] ✓ 通过文本定位找到 New chat 按钮")
+                    self.logger.debug("✓ 通过文本定位找到 New chat 按钮")
                     await new_chat_element.click()
                 else:
                     raise Exception("无法定位到 New chat 按钮")
@@ -459,22 +477,22 @@ class AutoMangaWorkflow(BrowserController):
                     raise Exception("无法获取New chat按钮元素")
                 
                 # 点击 New chat 按钮
-                print("[DEBUG] 点击 New chat 按钮...")
+                self.logger.debug("点击 New chat 按钮...")
                 await new_chat_button.click()
             
             await asyncio.sleep(2)  # 等待新聊天窗口加载
             
             # 等待新页面加载完成
             await self.page.wait_for_load_state('domcontentloaded')
-            print("[DEBUG] ✓ 新聊天窗口已打开")
+            self.logger.debug("✓ 新聊天窗口已打开")
             
         except Exception as e:
-            print(f"[ERROR] 打开新聊天窗口失败: {e}")
+            self.logger.error(f"打开新聊天窗口失败: {e}")
             raise
     
     async def select_create_images_tool(self):
         """点击 Tools 按钮并选择 Create Images 功能"""
-        print("[DEBUG] 准备选择 Create Images 工具...")
+        self.logger.debug("准备选择 Create Images 工具...")
         
         try:
             # 查找并点击 Tools 按钮
@@ -493,7 +511,7 @@ class AutoMangaWorkflow(BrowserController):
                 raise Exception("无法获取Tools按钮元素")
             
             # 点击 Tools 按钮
-            print("[DEBUG] 点击 Tools 按钮...")
+            self.logger.debug("点击 Tools 按钮...")
             await tools_button.click()
             await asyncio.sleep(0.5)  # 等待菜单展开
             
@@ -506,10 +524,10 @@ class AutoMangaWorkflow(BrowserController):
             
             if not create_images_selector:
                 # 如果直接选择器失败，尝试通过文本内容查找
-                print("[DEBUG] 尝试通过文本内容查找 Create Images...")
+                self.logger.debug("尝试通过文本内容查找 Create Images...")
                 create_images_element = await self.page.locator('text=Create Images').first
                 if await create_images_element.count() > 0:
-                    print("[DEBUG] ✓ 通过文本定位找到 Create Images")
+                    self.logger.debug("✓ 通过文本定位找到 Create Images")
                     await create_images_element.click()
                 else:
                     raise Exception("无法定位到 Create Images 选项")
@@ -520,14 +538,14 @@ class AutoMangaWorkflow(BrowserController):
                     raise Exception("无法获取Create Images元素")
                     
                 # 点击 Create Images
-                print("[DEBUG] 点击 Create Images...")
+                self.logger.debug("点击 Create Images...")
                 await create_images_element.click()
             
             await asyncio.sleep(0.5)  # 等待工具切换完成
-            print("[DEBUG] Create Images 工具已选择")
+            self.logger.debug("Create Images 工具已选择")
             
         except Exception as e:
-            print(f"[ERROR] 选择 Create Images 工具失败: {e}")
+            self.logger.error(f"选择 Create Images 工具失败: {e}")
             raise
     
     async def upload_image(self, image_path: str):
@@ -540,12 +558,12 @@ class AutoMangaWorkflow(BrowserController):
         print(f"开始上传图片: {image_path}")
         print(f"{'='*80}\n")
         
-        print(f"[INFO] 图片绝对路径: {abs_image_path}")
-        print(f"[INFO] 文件大小: {get_file_size(abs_image_path)} bytes\n")
+        self.logger.info(f"图片绝对路径: {abs_image_path}")
+        self.logger.info(f"文件大小: {get_file_size(abs_image_path)} bytes\n")
         
         # 使用综合策略上传图片
         from src.core.image_uploader import ImageUploader
-        uploader = ImageUploader(self.page)
+        uploader = ImageUploader(self.page, self.session_id)
         success = await uploader.upload_with_strategies(abs_image_path)
         
         if not success:
@@ -553,7 +571,7 @@ class AutoMangaWorkflow(BrowserController):
     
     async def send_multimodal_message(self, text: str):
         """发送多模态消息（包含图片和文本）"""
-        print(f"[DEBUG] 准备发送多模态消息: {text[:100]}...")
+        self.logger.debug(f"准备发送多模态消息: {text[:100]}...")
         
         try:
             # 查找输入框
@@ -572,12 +590,12 @@ class AutoMangaWorkflow(BrowserController):
                 raise Exception("无法找到输入框元素")
             
             # 点击输入框获得焦点
-            print("[DEBUG] 点击输入框...")
+            self.logger.debug("点击输入框...")
             await input_element.click()
             await asyncio.sleep(0.3)
             
             # 使用 JavaScript 追加文本内容（不清空现有内容，可能包含图片）
-            print("[DEBUG] 使用 JavaScript 追加内容...")
+            self.logger.debug("使用 JavaScript 追加内容...")
             await self.page.evaluate(
                 """(args) => {
                     const element = document.querySelector(args.selector);
@@ -608,10 +626,10 @@ class AutoMangaWorkflow(BrowserController):
             )
             
             await asyncio.sleep(0.5)  # 等待内容设置完成
-            print("[DEBUG] ✓ 内容已通过 JavaScript 设置")
+            self.logger.debug("✓ 内容已通过 JavaScript 设置")
             
             # 点击发送按钮发送消息
-            print("[DEBUG] 查找并点击发送按钮...")
+            self.logger.debug("查找并点击发送按钮...")
             send_button_selector = await find_working_selector(
                 self.page,
                 SELECTORS["send_button"],
@@ -620,13 +638,13 @@ class AutoMangaWorkflow(BrowserController):
             
             if not send_button_selector:
                 # 如果找不到发送按钮，尝试按回车作为备用方案
-                print("[WARNING] 无法定位发送按钮，尝试按回车发送...")
+                self.logger.warning("无法定位发送按钮，尝试按回车发送...")
                 await self.page.keyboard.press('Enter')
             else:
                 # 获取发送按钮元素
                 send_button = await self.page.query_selector(send_button_selector)
                 if not send_button:
-                    print("[WARNING] 无法获取发送按钮元素，尝试按回车发送...")
+                    self.logger.warning("无法获取发送按钮元素，尝试按回车发送...")
                     await self.page.keyboard.press('Enter')
                 else:
                     # 检查按钮是否可用（不是 disabled）
@@ -638,19 +656,19 @@ class AutoMangaWorkflow(BrowserController):
                     """, send_button_selector)
                     
                     if is_disabled:
-                        print("[WARNING] 发送按钮不可用，尝试按回车发送...")
+                        self.logger.warning("发送按钮不可用，尝试按回车发送...")
                         await self.page.keyboard.press('Enter')
                     else:
-                        print(f"[DEBUG] ✓ 找到发送按钮: {send_button_selector}")
+                        self.logger.debug(f"✓ 找到发送按钮: {send_button_selector}")
                         await send_button.click()
                         await asyncio.sleep(0.5)  # 等待发送完成
-                        print("[DEBUG] ✓ 已点击发送按钮")
+                        self.logger.debug("✓ 已点击发送按钮")
             
             await asyncio.sleep(0.5)  # 额外等待确保发送完成
-            print("[DEBUG] 多模态消息已发送")
+            self.logger.debug("多模态消息已发送")
             
         except Exception as e:
-            print(f"[ERROR] 发送多模态消息失败: {e}")
+            self.logger.error(f"发送多模态消息失败: {e}")
             raise
     
     async def wait_for_images_generated(self, initial_image_count: int = 0, saved_image_urls: set = None) -> tuple:
@@ -666,12 +684,12 @@ class AutoMangaWorkflow(BrowserController):
         if saved_image_urls is None:
             saved_image_urls = set()
         
-        print("[DEBUG] 等待图片生成...")
+        self.logger.debug("等待图片生成...")
         
         try:
             # 导入ImageSaver用于URL处理
             from src.core.image_saver import ImageSaver
-            saver = ImageSaver(self.page)
+            saver = ImageSaver(self.page, self.session_id)
             
             # 等待新的响应容器出现（通过检测响应容器的数量变化）
             container_selector = '.attachment-container.generated-images'
@@ -684,7 +702,7 @@ class AutoMangaWorkflow(BrowserController):
             timeout_seconds = RESPONSE_TIMEOUT / 1000.0
             
             # 等待新的图片容器出现（通过检测容器数量增加）
-            print(f"[DEBUG] 当前图片数量: {initial_image_count}，已保存图片数量: {len(saved_image_urls)}，等待新图片生成...")
+            self.logger.debug(f"当前图片数量: {initial_image_count}，已保存图片数量: {len(saved_image_urls)}，等待新图片生成...")
             
             new_images_detected = False
             last_container_count = 0
@@ -694,7 +712,7 @@ class AutoMangaWorkflow(BrowserController):
             while True:
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    print("[WARNING] 等待新图片生成超时")
+                    self.logger.warning("等待新图片生成超时")
                     return (False, [])
                 
                 try:
@@ -724,11 +742,11 @@ class AutoMangaWorkflow(BrowserController):
                     # 如果容器数量增加了，或者有新图片URL，说明有新的响应
                     if current_container_count > last_container_count or len(new_urls) > 0:
                         if current_container_count > last_container_count:
-                            print(f"[DEBUG] ✓ 检测到新的图片容器（容器数量: {last_container_count} -> {current_container_count}）")
+                            self.logger.debug(f"✓ 检测到新的图片容器（容器数量: {last_container_count} -> {current_container_count}）")
                             last_container_count = current_container_count
                         
                         if len(new_urls) > 0:
-                            print(f"[DEBUG] ✓ 检测到 {len(new_urls)} 张新图片（不在已保存列表中）")
+                            self.logger.debug(f"✓ 检测到 {len(new_urls)} 张新图片（不在已保存列表中）")
                             new_image_urls = list(new_urls)
                             new_images_detected = True
                             
@@ -751,22 +769,22 @@ class AutoMangaWorkflow(BrowserController):
                                             continue
                                     
                                     if len(latest_urls) > 0:
-                                        print(f"[DEBUG] ✓ 最新容器中有 {len(latest_urls)} 张新图片")
+                                        self.logger.debug(f"✓ 最新容器中有 {len(latest_urls)} 张新图片")
                                         break
                     
                     # 短暂等待后继续检查
                     await asyncio.sleep(0.5)
                     
                 except Exception as e:
-                    print(f"[DEBUG] 检查图片状态时出错: {e}，继续等待...")
+                    self.logger.debug(f"检查图片状态时出错: {e}，继续等待...")
                     await asyncio.sleep(0.5)
             
             if not new_images_detected or len(new_image_urls) == 0:
-                print("[WARNING] 未检测到新图片")
+                self.logger.warning("未检测到新图片")
                 return (False, [])
             
             # 等待新图片加载完成
-            print("[DEBUG] 等待新图片加载完成...")
+            self.logger.debug("等待新图片加载完成...")
             from src.utils.browser_utils import wait_for_images_loading
             
             # 等待最新容器中的图片加载完成
@@ -786,14 +804,14 @@ class AutoMangaWorkflow(BrowserController):
                 latest_container_selector,
                 max_timeout=RESPONSE_TIMEOUT
             ):
-                print(f"[DEBUG] ✓ 新图片加载完成，共 {len(new_image_urls)} 张新图片")
+                self.logger.debug(f"✓ 新图片加载完成，共 {len(new_image_urls)} 张新图片")
                 return (True, new_image_urls)
             else:
-                print("[WARNING] 新图片加载超时")
+                self.logger.warning("新图片加载超时")
                 return (False, [])
                 
         except Exception as e:
-            print(f"[ERROR] 等待图片生成失败: {e}")
+            self.logger.error(f"等待图片生成失败: {e}")
             return (False, [])
     
     async def wait_for_all_batches_completed(self, total_batches: int, saved_image_urls: set, max_wait_time: int = 300):
@@ -804,7 +822,7 @@ class AutoMangaWorkflow(BrowserController):
             saved_image_urls: 已保存的图片URL集合（用于排除已存在的图片）
             max_wait_time: 最大等待时间（秒）
         """
-        print(f"[DEBUG] 等待所有 {total_batches} 个批次生成完成...")
+        self.logger.debug(f"等待所有 {total_batches} 个批次生成完成...")
         
         container_selector = '.attachment-container.generated-images'
         start_time = time.time()
@@ -812,7 +830,7 @@ class AutoMangaWorkflow(BrowserController):
         while True:
             elapsed = time.time() - start_time
             if elapsed > max_wait_time:
-                print(f"[WARNING] 等待所有批次完成超时（{max_wait_time}秒）")
+                self.logger.warning(f"等待所有批次完成超时（{max_wait_time}秒）")
                 break
             
             try:
@@ -822,7 +840,7 @@ class AutoMangaWorkflow(BrowserController):
                 
                 # 获取所有图片的URL
                 from src.core.image_saver import ImageSaver
-                saver = ImageSaver(self.page)
+                saver = ImageSaver(self.page, self.session_id)
                 all_images = await self.page.query_selector_all(f'{container_selector} img[src]')
                 
                 # 收集所有图片URL（排除已存在的）
@@ -839,7 +857,7 @@ class AutoMangaWorkflow(BrowserController):
                 
                 # 检查是否所有批次都已完成（容器数量应该等于批次数）
                 if current_container_count >= total_batches:
-                    print(f"[DEBUG] ✓ 检测到 {current_container_count} 个图片容器（期望 {total_batches} 个）")
+                    self.logger.debug(f"✓ 检测到 {current_container_count} 个图片容器（期望 {total_batches} 个）")
                     
                     # 等待所有图片加载完成
                     from src.utils.browser_utils import wait_for_images_loading
@@ -848,14 +866,14 @@ class AutoMangaWorkflow(BrowserController):
                         container_selector,
                         max_timeout=RESPONSE_TIMEOUT
                     ):
-                        print(f"[DEBUG] ✓ 所有批次图片已生成并加载完成")
+                        self.logger.debug(f"✓ 所有批次图片已生成并加载完成")
                         return
                 
-                print(f"[DEBUG] 当前容器数量: {current_container_count}/{total_batches}，继续等待...")
+                self.logger.debug(f"当前容器数量: {current_container_count}/{total_batches}，继续等待...")
                 await asyncio.sleep(2)
                 
             except Exception as e:
-                print(f"[DEBUG] 检查批次状态时出错: {e}，继续等待...")
+                self.logger.debug(f"检查批次状态时出错: {e}，继续等待...")
                 await asyncio.sleep(2)
     
     async def save_all_images_sequentially(self, save_dir: str, total_batches: int) -> List[str]:
@@ -869,7 +887,7 @@ class AutoMangaWorkflow(BrowserController):
             List[str]: 保存的文件路径列表（按顺序）
         """
         from src.core.image_saver import ImageSaver
-        saver = ImageSaver(self.page)
+        saver = ImageSaver(self.page, self.session_id)
         return await saver.save_all_images_sequentially(save_dir, total_batches)
     
     async def save_generated_images(self, save_dir: str = DEFAULT_IMAGES_DIR, target_image_urls: List[str] = None) -> List[str]:
@@ -883,7 +901,7 @@ class AutoMangaWorkflow(BrowserController):
             List[str]: 保存的文件路径列表
         """
         from src.core.image_saver import ImageSaver
-        saver = ImageSaver(self.page)
+        saver = ImageSaver(self.page, self.session_id)
         if target_image_urls:
             # 只保存指定URL的图片
             return await saver.save_images_by_urls(save_dir, target_image_urls)
@@ -902,7 +920,7 @@ class AutoMangaWorkflow(BrowserController):
             str: 保存的封面图片路径，如果失败则返回None
         """
         if not self.theme_name:
-            print("[WARNING] 主题名称未设置，无法生成封面图片")
+            self.logger.warning("主题名称未设置，无法生成封面图片")
             return None
         
         print("\n" + "="*80)
@@ -917,10 +935,10 @@ class AutoMangaWorkflow(BrowserController):
             # 构建封面生成提示词
             cover_query = f"根据生成的{self.theme_name}，总结一个主题，替换掉图中\"Vibe Coding 赛博朋克\"这个字符串，输出最终的图片。只能更改\"Vibe Coding 赛博朋克\"这个文字，其他的保持不变。去除右下角的水印。"
             
-            print(f"[INFO] 封面图片模板: {cover_image_path}")
-            print(f"[INFO] 主题名称: {self.theme_name}")
-            print(f"[INFO] 保存目录: {save_dir}")
-            print(f"[INFO] 封面生成提示词: {cover_query}")
+            self.logger.info(f"封面图片模板: {cover_image_path}")
+            self.logger.info(f"主题名称: {self.theme_name}")
+            self.logger.info(f"保存目录: {save_dir}")
+            self.logger.info(f"封面生成提示词: {cover_query}")
             
             # 上传封面模板图片
             print("\n[DEBUG] 上传封面模板图片...")
@@ -928,11 +946,20 @@ class AutoMangaWorkflow(BrowserController):
             await asyncio.sleep(1)  # 等待图片上传完成
             
             # 发送多模态消息（包含图片和文本）
-            print("[DEBUG] 发送封面生成请求...")
+            self.logger.debug("发送封面生成请求...")
             await self.send_multimodal_message(cover_query)
+            await asyncio.sleep(2)  # 发送消息后滚动
+            self.logger.debug("发送消息后滚动到底部，确保新生成的响应被渲染")
+            # ==================== 新增修复代码 ====================
+            # 发送消息后，强制页面滚动到底部，确保新生成的响应被渲染
+            try:
+                await self.page.keyboard.press('End')
+            except:
+                pass
+            # ====================================================
             
             # 等待图片生成完成
-            print("[DEBUG] 等待封面图片生成...")
+            self.logger.debug("等待封面图片生成...")
             container_selector = '.attachment-container.generated-images'
             
             # 记录发送前的图片数量和URL
@@ -940,11 +967,11 @@ class AutoMangaWorkflow(BrowserController):
             try:
                 existing_images = await self.page.query_selector_all(f'{container_selector} img[src]')
                 initial_image_count = len(existing_images)
-                print(f"[DEBUG] 发送前图片数量: {initial_image_count}")
+                self.logger.debug(f"发送前图片数量: {initial_image_count}")
                 
                 # 记录发送前的所有图片URL
                 from src.core.image_saver import ImageSaver
-                saver = ImageSaver(self.page)
+                saver = ImageSaver(self.page, self.session_id)
                 for img in existing_images:
                     try:
                         img_src = await img.get_attribute('src')
@@ -957,7 +984,7 @@ class AutoMangaWorkflow(BrowserController):
                 initial_image_count = 0
             
             # 等待新图片生成（使用更长的超时时间）
-            print("[DEBUG] 等待封面图片生成（最多等待 180 秒）...")
+            self.logger.debug("等待封面图片生成（最多等待 180 秒）...")
             success, new_image_urls = await self.wait_for_images_generated(
                 initial_image_count=initial_image_count,
                 saved_image_urls=initial_image_urls  # 排除发送前已存在的图片
@@ -965,48 +992,48 @@ class AutoMangaWorkflow(BrowserController):
             
             # 即使等待超时，也尝试保存已检测到的图片
             if len(new_image_urls) > 0:
-                print(f"[DEBUG] ✓ 检测到 {len(new_image_urls)} 张新图片URL，尝试保存...")
+                self.logger.debug(f"✓ 检测到 {len(new_image_urls)} 张新图片URL，尝试保存...")
                 
                 # 额外等待一下，确保图片至少部分加载
                 await asyncio.sleep(3)
                 
                 # 保存封面图片（即使加载超时也尝试保存）
-                print("[DEBUG] 保存封面图片...")
+                self.logger.debug("保存封面图片...")
                 saved_files = await self.save_generated_images(save_dir, new_image_urls)
                 
                 if saved_files and len(saved_files) > 0:
                     # 封面图片应该只有一张，取第一张
                     cover_file = saved_files[0]
-                    print(f"[DEBUG] ✓ 封面图片已保存: {cover_file}")
+                    self.logger.debug(f"✓ 封面图片已保存: {cover_file}")
                     return cover_file
                 else:
                     # 如果通过URL保存失败，尝试使用备用方法：直接保存最新容器中的图片
-                    print("[WARNING] 通过URL保存失败，尝试备用方法：直接保存最新容器中的图片...")
+                    self.logger.warning("通过URL保存失败，尝试备用方法：直接保存最新容器中的图片...")
                     try:
                         containers = await self.page.query_selector_all(container_selector)
                         if containers:
                             latest_container = containers[-1]
                             # 使用 save_all_images_sequentially 的备用逻辑
                             from src.core.image_saver import ImageSaver
-                            saver = ImageSaver(self.page)
+                            saver = ImageSaver(self.page, self.session_id)
                             # 尝试直接保存最新容器中的图片
                             saved_files = await saver.save_all_images(save_dir)
                             if saved_files:
                                 # 取最后一张（应该是封面图片）
                                 cover_file = saved_files[-1]
-                                print(f"[DEBUG] ✓ 封面图片已保存（备用方法）: {cover_file}")
+                                self.logger.debug(f"✓ 封面图片已保存（备用方法）: {cover_file}")
                                 return cover_file
                     except Exception as backup_error:
-                        print(f"[WARNING] 备用保存方法也失败: {backup_error}")
+                        self.logger.warning(f"备用保存方法也失败: {backup_error}")
                     
-                    print("[WARNING] 封面图片生成成功但保存失败")
+                    self.logger.warning("封面图片生成成功但保存失败")
                     return None
             else:
-                print("[WARNING] 未检测到新生成的封面图片")
+                self.logger.warning("未检测到新生成的封面图片")
                 return None
                 
         except Exception as e:
-            print(f"[ERROR] 生成封面图片失败: {e}")
+            self.logger.error(f"生成封面图片失败: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -1061,8 +1088,8 @@ class AutoMangaWorkflow(BrowserController):
                 
                 # 创建主题文件夹
                 self.theme_dir = self.create_theme_directory(self.theme_name)
-                print(f"[INFO] ✓ 主题名称: {self.theme_name}")
-                print(f"[INFO] ✓ 主题文件夹: {self.theme_dir}")
+                self.logger.info(f"✓ 主题名称: {self.theme_name}")
+                self.logger.info(f"✓ 主题文件夹: {self.theme_dir}")
                 
                 # 选择 Create Images 工具
                 print("\n" + "="*80)
@@ -1078,9 +1105,9 @@ class AutoMangaWorkflow(BrowserController):
                 )
                 
                 if cover_file:
-                    print(f"[INFO] ✓ 封面图片已生成并保存: {cover_file}")
+                    self.logger.info(f"✓ 封面图片已生成并保存: {cover_file}")
                 else:
-                    print("[WARNING] 封面图片生成失败")
+                    self.logger.warning("封面图片生成失败")
                 
                 print("\n" + "="*80)
                 print("✓ 封面生成测试完成！")
@@ -1097,7 +1124,7 @@ class AutoMangaWorkflow(BrowserController):
                 if not session_file:
                     raise Exception("skip_script_generation=True 时必须提供 session_file 参数")
                 copied_content, panel_count = self.load_from_session_file(session_file)
-                print(f"[DEBUG] ✓ 已从 session 文件读取内容，宫格数量: {panel_count}")
+                self.logger.debug(f"✓ 已从 session 文件读取内容，宫格数量: {panel_count}")
                 
                 # 如果跳过脚本生成，使用概念名生成默认主题
                 print("\n" + "="*80)
@@ -1110,8 +1137,8 @@ class AutoMangaWorkflow(BrowserController):
                     default_theme = default_theme[:10]
                 self.theme_name = f"{default_theme}漫画"
                 self.theme_dir = self.create_theme_directory(self.theme_name)
-                print(f"[INFO] ✓ 主题名称: {self.theme_name}")
-                print(f"[INFO] ✓ 主题文件夹: {self.theme_dir}")
+                self.logger.info(f"✓ 主题名称: {self.theme_name}")
+                self.logger.info(f"✓ 主题文件夹: {self.theme_dir}")
             else:
                 # 正常流程：生成脚本
                 print("\n" + "="*80)
@@ -1125,9 +1152,9 @@ class AutoMangaWorkflow(BrowserController):
                 print("步骤2: 等待脚本生成")
                 print("="*80)
                 if await self.wait_for_response():
-                    print("[DEBUG] ✓ 脚本生成完成")
+                    self.logger.debug("✓ 脚本生成完成")
                 else:
-                    print("[WARNING] 脚本生成可能未完成，继续尝试复制")
+                    self.logger.warning("脚本生成可能未完成，继续尝试复制")
                 
                 # 步骤4: 复制表格内容
                 print("\n" + "="*80)
@@ -1138,7 +1165,7 @@ class AutoMangaWorkflow(BrowserController):
                 # 计算宫格数量
                 from src.utils.file_utils import count_panels_from_table
                 panel_count = count_panels_from_table(copied_content)
-                print(f"[DEBUG] ✓ 检测到宫格数量: {panel_count}")
+                self.logger.debug(f"✓ 检测到宫格数量: {panel_count}")
                 
                 # 步骤5: 保存到文件
                 print("\n" + "="*80)
@@ -1150,10 +1177,11 @@ class AutoMangaWorkflow(BrowserController):
                 print("\n" + "="*80)
                 print("步骤5: 生成主题名称并创建主题文件夹")
                 print("="*80)
-                self.theme_name = await self.generate_theme_name()
+                # self.theme_name = await self.generate_theme_name()  # 暂时忽略，直接使用概念名
+                self.theme_name = self.concept
                 self.theme_dir = self.create_theme_directory(self.theme_name)
-                print(f"[INFO] ✓ 主题名称: {self.theme_name}")
-                print(f"[INFO] ✓ 主题文件夹: {self.theme_dir}")
+                self.logger.info(f"✓ 主题名称: {self.theme_name}")
+                self.logger.info(f"✓ 主题文件夹: {self.theme_dir}")
             
             # 步骤6: 打开新聊天窗口
             print("\n" + "="*80)
@@ -1183,14 +1211,14 @@ class AutoMangaWorkflow(BrowserController):
             
             # 计算需要生成的批次数量（每4个一组）
             total_batches = (panel_count + 3) // 4  # 向上取整
-            print(f"[INFO] 需要生成 {total_batches} 批次，每批次 4 个宫格")
+            self.logger.info(f"需要生成 {total_batches} 批次，每批次 4 个宫格")
             
             # 在循环开始前，收集所有现有图片的URL（这些是上传的demo图片等，不应该被保存）
             saved_image_urls = set()
             container_selector = '.attachment-container.generated-images'
             try:
                 from src.core.image_saver import ImageSaver
-                saver = ImageSaver(self.page)
+                saver = ImageSaver(self.page, self.session_id)
                 existing_images = await self.page.query_selector_all(f'{container_selector} img[src]')
                 for img in existing_images:
                     try:
@@ -1200,9 +1228,9 @@ class AutoMangaWorkflow(BrowserController):
                             saved_image_urls.add(processed_url)
                     except:
                         continue
-                print(f"[DEBUG] 循环开始前，已收集 {len(saved_image_urls)} 个现有图片URL（这些图片不会被保存）")
+                self.logger.debug(f"循环开始前，已收集 {len(saved_image_urls)} 个现有图片URL（这些图片不会被保存）")
             except:
-                print("[DEBUG] 无法收集现有图片URL，使用空集合")
+                self.logger.debug("无法收集现有图片URL，使用空集合")
             
             # 第一阶段：发送所有批次的生成请求，只等待生成完成，不立即保存
             print("\n" + "-"*80)
@@ -1232,13 +1260,13 @@ class AutoMangaWorkflow(BrowserController):
                 try:
                     existing_images = await self.page.query_selector_all(f'{container_selector} img[src]')
                     initial_image_count = len(existing_images)
-                    print(f"[DEBUG] 发送消息前，当前图片数量: {initial_image_count}")
+                    self.logger.debug(f"发送消息前，当前图片数量: {initial_image_count}")
                 except:
                     initial_image_count = 0
-                    print("[DEBUG] 无法获取当前图片数量，使用默认值 0")
+                    self.logger.debug("无法获取当前图片数量，使用默认值 0")
                 
                 # 发送消息（第一次使用多模态，后续批次只发送文本）
-                print(f"[DEBUG] 发送生成请求: P{start_panel}-P{end_panel}")
+                self.logger.debug(f"发送生成请求: P{start_panel}-P{end_panel}")
                 if batch_index == 0:
                     # 第一次：需要包含图片和表格，使用多模态消息
                     await self.send_multimodal_message(full_message)
@@ -1247,7 +1275,7 @@ class AutoMangaWorkflow(BrowserController):
                     await self.send_message(full_message)
                 
                 # 等待当前批次的图片生成完成（不保存）
-                print(f"[DEBUG] 等待批次 {batch_index + 1} 图片生成...")
+                self.logger.debug(f"等待批次 {batch_index + 1} 图片生成...")
                 success, new_image_urls = await self.wait_for_images_generated(
                     initial_image_count=initial_image_count,
                     saved_image_urls=saved_image_urls
@@ -1256,15 +1284,15 @@ class AutoMangaWorkflow(BrowserController):
                 if success and len(new_image_urls) > 0:
                     # 将新生成的图片URL加入已保存列表（用于后续批次检测）
                     saved_image_urls.update(new_image_urls)
-                    print(f"[DEBUG] ✓ 批次 {batch_index + 1} 图片生成完成，检测到 {len(new_image_urls)} 张新图片")
+                    self.logger.debug(f"✓ 批次 {batch_index + 1} 图片生成完成，检测到 {len(new_image_urls)} 张新图片")
                 elif success:
-                    print(f"[WARNING] 批次 {batch_index + 1} 图片生成成功，但未检测到新图片URL")
+                    self.logger.warning(f"批次 {batch_index + 1} 图片生成成功，但未检测到新图片URL")
                 else:
-                    print(f"[WARNING] 批次 {batch_index + 1} (P{start_panel}-P{end_panel}) 图片生成超时或失败")
+                    self.logger.warning(f"批次 {batch_index + 1} (P{start_panel}-P{end_panel}) 图片生成超时或失败")
                 
                 # 如果不是最后一批，等待一下再继续
                 if batch_index < total_batches - 1:
-                    print(f"[DEBUG] 等待 2 秒后继续下一批次...")
+                    self.logger.debug(f"等待 2 秒后继续下一批次...")
                     await asyncio.sleep(2)
             
             # 第二阶段：等待所有批次生成完成
@@ -1281,18 +1309,18 @@ class AutoMangaWorkflow(BrowserController):
             # 使用主题文件夹作为保存路径（如果已生成）
             save_dir = self.theme_dir if self.theme_dir else images_dir
             if self.theme_dir:
-                print(f"[INFO] 图片将保存到主题文件夹: {save_dir}")
+                self.logger.info(f"图片将保存到主题文件夹: {save_dir}")
             else:
-                print(f"[INFO] 图片将保存到默认文件夹: {save_dir}")
+                self.logger.info(f"图片将保存到默认文件夹: {save_dir}")
             
             saved_files = await self.save_all_images_sequentially(save_dir, total_batches)
             
             if saved_files:
-                print(f"[DEBUG] ✓ 成功保存 {len(saved_files)} 张图片到 {save_dir}")
+                self.logger.debug(f"✓ 成功保存 {len(saved_files)} 张图片到 {save_dir}")
                 for idx, file in enumerate(saved_files, 1):
                     print(f"  {idx}. {file}")
             else:
-                print("[WARNING] 未保存任何图片")
+                self.logger.warning("未保存任何图片")
             
             # 第四阶段：生成封面图片
             if self.theme_name and self.theme_dir:
@@ -1301,18 +1329,18 @@ class AutoMangaWorkflow(BrowserController):
                     save_dir=save_dir
                 )
                 if cover_file:
-                    print(f"[INFO] ✓ 封面图片已生成并保存: {cover_file}")
+                    self.logger.info(f"✓ 封面图片已生成并保存: {cover_file}")
                 else:
-                    print("[WARNING] 封面图片生成失败，但工作流继续完成")
+                    self.logger.warning("封面图片生成失败，但工作流继续完成")
             else:
-                print("[WARNING] 主题名称或主题文件夹未设置，跳过封面图片生成")
+                self.logger.warning("主题名称或主题文件夹未设置，跳过封面图片生成")
             
             print("\n" + "="*80)
             print(f"✓ 工作流完成！共生成 {total_batches} 批次，{panel_count} 个宫格")
             print("="*80)
             
         except Exception as e:
-            print(f"[ERROR] 工作流执行失败: {e}")
+            self.logger.error(f"工作流执行失败: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -1331,12 +1359,12 @@ async def main():
         # 如果提供了参数，假设是 session 文件路径
         session_file = sys.argv[1]
         skip_script = True
-        print(f"[INFO] 将从 session 文件读取内容: {session_file}")
-        print("[INFO] 跳过脚本生成步骤")
+        print(f"将从 session 文件读取内容: {session_file}")
+        print("跳过脚本生成步骤")
     else:
         # 正常流程：生成脚本
         concept = "大模型领域的幻觉"
-        print(f"[INFO] 将生成新脚本，概念: {concept}")
+        print(f"将生成新脚本，概念: {concept}")
     
     # 创建控制器并运行工作流
     if skip_script:

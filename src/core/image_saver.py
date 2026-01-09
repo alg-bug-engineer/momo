@@ -5,15 +5,20 @@
 import os
 import time
 from pathlib import Path
+import asyncio
 from typing import List
 from urllib.parse import urlparse
+
+from src.utils.logger import get_logger
 
 
 class ImageSaver:
     """图片保存类"""
     
-    def __init__(self, page):
+    def __init__(self, page, session_id=None):
         self.page = page
+        self.session_id = session_id
+        self.logger = get_logger(session_id)
     
     async def save_all_images_sequentially(self, save_dir: str, total_batches: int) -> List[str]:
         """
@@ -26,12 +31,12 @@ class ImageSaver:
         Returns:
             List[str]: 保存的文件路径列表（按顺序，1.png, 2.png, ...）
         """
-        print(f"[DEBUG] 准备按顺序保存所有图片到 {save_dir}...")
+        self.logger.debug(f"准备按顺序保存所有图片到 {save_dir}...")
         
         # 创建保存目录
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
-        print(f"[DEBUG] ✓ 目录已创建/存在: {save_path.absolute()}")
+        self.logger.debug(f"✓ 目录已创建/存在: {save_path.absolute()}")
         
         saved_files = []
         
@@ -41,20 +46,44 @@ class ImageSaver:
             containers = await self.page.query_selector_all(container_selector)
             
             if not containers:
-                print("[WARNING] 未找到生成的图片容器")
+                self.logger.warning("未找到生成的图片容器")
                 return saved_files
             
             container_count = len(containers)
-            print(f"[DEBUG] 找到 {container_count} 个图片容器（期望 {total_batches} 个）")
+            self.logger.debug(f"找到 {container_count} 个图片容器（期望 {total_batches} 个）")
             
             if container_count != total_batches:
-                print(f"[WARNING] 容器数量 ({container_count}) 与批次数 ({total_batches}) 不一致，继续保存...")
+                self.logger.warning(f"容器数量 ({container_count}) 与批次数 ({total_batches}) 不一致，继续保存...")
             
             # 按顺序处理每个容器
             for idx, container in enumerate(containers, 1):
                 try:
-                    print(f"[DEBUG] 处理图片容器 {idx}/{container_count}...")
+                    self.logger.debug(f"处理图片容器 {idx}/{container_count}...")
                     
+                    # ==================== 新增修复代码 ====================
+                    # 1. 强制滚动到当前容器，触发懒加载
+                    try:
+                        await container.scroll_into_view_if_needed()
+                        # 额外等待一下，给浏览器渲染时间
+                        await asyncio.sleep(1)
+                    except Exception as e:
+                        print(f"[DEBUG] 滚动到容器 {idx} 失败: {e}")
+
+                    # 2. 显式等待容器内的图片元素出现
+                    try:
+                        # 等待图片元素出现在 DOM 中且可见
+                        # 注意：这里不能直接用 page.wait_for_selector，因为我们要限定在 container 内部
+                        # 使用 wait_for 方法（如果 playwright 版本支持 element_handle.wait_for_selector）
+                        # 或者简单的轮询检查
+                        for _ in range(5): # 最多重试 5 次
+                            img_check = await container.query_selector('img[src]')
+                            if img_check:
+                                break
+                            await asyncio.sleep(1)
+                    except Exception as wait_err:
+                         print(f"[DEBUG] 等待图片元素出现出错: {wait_err}")
+                    # ====================================================
+
                     # 首先尝试在容器内查找子容器（generated-image），如果没有则直接使用主容器
                     sub_container = None
                     sub_container_selectors = [
@@ -66,7 +95,7 @@ class ImageSaver:
                         try:
                             sub_container = await container.query_selector(sub_selector)
                             if sub_container:
-                                print(f"[DEBUG] ✓ 在容器 {idx} 中找到子容器: {sub_selector}")
+                                self.logger.debug(f"✓ 在容器 {idx} 中找到子容器: {sub_selector}")
                                 break
                         except:
                             continue
@@ -81,7 +110,7 @@ class ImageSaver:
                         
                         if download_button:
                             # 使用 Playwright 的下载监听功能
-                            print("[DEBUG] 点击下载按钮，使用浏览器原生下载...")
+                            self.logger.debug("点击下载按钮，使用浏览器原生下载...")
                             
                             # 监听下载事件
                             async with self.page.expect_download(timeout=30000) as download_info:
@@ -102,11 +131,11 @@ class ImageSaver:
                             await download.save_as(str(file_path))
                             
                             saved_files.append(str(file_path.absolute()))
-                            print(f"[DEBUG] ✓ 图片已保存（原生下载）: {file_path.absolute()}")
+                            self.logger.debug(f"✓ 图片已保存（原生下载）: {file_path.absolute()}")
                             download_success = True
                             
                     except Exception as download_btn_error:
-                        print(f"[DEBUG] 下载按钮方式失败: {download_btn_error}")
+                        self.logger.debug(f"下载按钮方式失败: {download_btn_error}")
                     
                     # 方法2: 如果下载按钮失败，尝试直接下载图片 URL
                     if not download_success:
@@ -122,7 +151,7 @@ class ImageSaver:
                             # 处理相对 URL
                             img_src = self._process_image_url(img_src)
                             
-                            print(f"[DEBUG] 尝试直接下载图片 URL: {img_src[:80]}...")
+                            self.logger.debug(f"尝试直接下载图片 URL: {img_src[:80]}...")
                             
                             # 使用 Playwright 的 request API 下载
                             response = await self.page.request.get(img_src)
@@ -141,18 +170,18 @@ class ImageSaver:
                                     f.write(content)
                                 
                                 saved_files.append(str(file_path.absolute()))
-                                print(f"[DEBUG] ✓ 图片已保存（URL下载）: {file_path.absolute()}")
+                                self.logger.debug(f"✓ 图片已保存（URL下载）: {file_path.absolute()}")
                                 download_success = True
                             else:
                                 raise Exception(f"下载失败，状态码: {response.status}")
                                 
                         except Exception as url_error:
-                            print(f"[DEBUG] URL 下载失败: {url_error}")
+                            self.logger.debug(f"URL 下载失败: {url_error}")
                     
                     # 方法3: 如果都失败，使用截图作为兜底（清晰度较低）
                     if not download_success:
                         try:
-                            print("[DEBUG] 使用截图方式作为兜底...")
+                            self.logger.debug("使用截图方式作为兜底...")
                             img_element = await target_container.query_selector('img[src]')
                             if img_element:
                                 # 使用数字序号命名
@@ -162,22 +191,22 @@ class ImageSaver:
                                 await img_element.screenshot(path=str(file_path))
                                 
                                 saved_files.append(str(file_path.absolute()))
-                                print(f"[DEBUG] ✓ 图片已保存（截图方式，清晰度较低）: {file_path.absolute()}")
+                                self.logger.debug(f"✓ 图片已保存（截图方式，清晰度较低）: {file_path.absolute()}")
                             else:
                                 raise Exception("未找到图片元素")
                         except Exception as screenshot_error:
-                            print(f"[ERROR] 截图方式也失败: {screenshot_error}")
-                            print(f"[ERROR] 所有下载方式都失败，跳过图片容器 {idx}")
+                            self.logger.error(f"截图方式也失败: {screenshot_error}")
+                            self.logger.error(f"所有下载方式都失败，跳过图片容器 {idx}")
                             
                 except Exception as e:
-                    print(f"[ERROR] 处理图片容器 {idx} 时出错: {e}")
+                    self.logger.error(f"处理图片容器 {idx} 时出错: {e}")
                     continue
             
-            print(f"[DEBUG] 共保存 {len(saved_files)} 张图片（按顺序命名）")
+            self.logger.debug(f"共保存 {len(saved_files)} 张图片（按顺序命名）")
             return saved_files
             
         except Exception as e:
-            print(f"[ERROR] 保存图片失败: {e}")
+            self.logger.error(f"保存图片失败: {e}")
             return saved_files
     
     async def save_all_images(self, save_dir: str) -> List[str]:
@@ -193,12 +222,12 @@ class ImageSaver:
         Returns:
             List[str]: 保存的文件路径列表
         """
-        print(f"[DEBUG] 准备保存图片到 {save_dir}...")
+        self.logger.debug(f"准备保存图片到 {save_dir}...")
         
         # 创建保存目录
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
-        print(f"[DEBUG] ✓ 目录已创建/存在: {save_path.absolute()}")
+        self.logger.debug(f"✓ 目录已创建/存在: {save_path.absolute()}")
         
         saved_files = []
         
@@ -215,20 +244,20 @@ class ImageSaver:
                     container_elements = await self.page.query_selector_all(selector)
                     if container_elements:
                         containers = container_elements
-                        print(f"[DEBUG] ✓ 使用选择器找到 {len(containers)} 个图片容器: {selector}")
+                        self.logger.debug(f"✓ 使用选择器找到 {len(containers)} 个图片容器: {selector}")
                         break
                 except:
                     continue
             
             if not containers:
-                print("[WARNING] 未找到生成的图片容器")
+                self.logger.warning("未找到生成的图片容器")
                 return saved_files
             
-            print(f"[DEBUG] 找到 {len(containers)} 张图片，开始下载...")
+            self.logger.debug(f"找到 {len(containers)} 张图片，开始下载...")
             
             for idx, container in enumerate(containers):
                 try:
-                    print(f"[DEBUG] 处理图片 {idx + 1}/{len(containers)}...")
+                    self.logger.debug(f"处理图片 {idx + 1}/{len(containers)}...")
                     
                     # 方法1: 优先尝试点击下载按钮（获得原始清晰度）
                     download_success = False
@@ -237,7 +266,7 @@ class ImageSaver:
                         
                         if download_button:
                             # 使用 Playwright 的下载监听功能
-                            print("[DEBUG] 点击下载按钮，使用浏览器原生下载...")
+                            self.logger.debug("点击下载按钮，使用浏览器原生下载...")
                             
                             # 监听下载事件
                             async with self.page.expect_download(timeout=30000) as download_info:
@@ -256,11 +285,11 @@ class ImageSaver:
                             await download.save_as(str(file_path))
                             
                             saved_files.append(str(file_path.absolute()))
-                            print(f"[DEBUG] ✓ 图片已保存（原生下载）: {file_path.absolute()}")
+                            self.logger.debug(f"✓ 图片已保存（原生下载）: {file_path.absolute()}")
                             download_success = True
                             
                     except Exception as download_btn_error:
-                        print(f"[DEBUG] 下载按钮方式失败: {download_btn_error}")
+                        self.logger.debug(f"下载按钮方式失败: {download_btn_error}")
                     
                     # 方法2: 如果下载按钮失败，尝试直接下载图片 URL
                     if not download_success:
@@ -276,7 +305,7 @@ class ImageSaver:
                             # 处理相对 URL
                             img_src = self._process_image_url(img_src)
                             
-                            print(f"[DEBUG] 尝试直接下载图片 URL: {img_src[:80]}...")
+                            self.logger.debug(f"尝试直接下载图片 URL: {img_src[:80]}...")
                             
                             # 使用 Playwright 的 request API 下载
                             response = await self.page.request.get(img_src)
@@ -294,18 +323,18 @@ class ImageSaver:
                                     f.write(content)
                                 
                                 saved_files.append(str(file_path.absolute()))
-                                print(f"[DEBUG] ✓ 图片已保存（URL下载）: {file_path.absolute()}")
+                                self.logger.debug(f"✓ 图片已保存（URL下载）: {file_path.absolute()}")
                                 download_success = True
                             else:
                                 raise Exception(f"下载失败，状态码: {response.status}")
                                 
                         except Exception as url_error:
-                            print(f"[DEBUG] URL 下载失败: {url_error}")
+                            self.logger.debug(f"URL 下载失败: {url_error}")
                     
                     # 方法3: 如果都失败，使用截图作为兜底（清晰度较低）
                     if not download_success:
                         try:
-                            print("[DEBUG] 使用截图方式作为兜底...")
+                            self.logger.debug("使用截图方式作为兜底...")
                             img_element = await container.query_selector('img[src]')
                             if img_element:
                                 filename = f"image_{int(time.time())}_{idx + 1}.png"
@@ -314,22 +343,22 @@ class ImageSaver:
                                 await img_element.screenshot(path=str(file_path))
                                 
                                 saved_files.append(str(file_path.absolute()))
-                                print(f"[DEBUG] ✓ 图片已保存（截图方式，清晰度较低）: {file_path.absolute()}")
+                                self.logger.debug(f"✓ 图片已保存（截图方式，清晰度较低）: {file_path.absolute()}")
                             else:
                                 raise Exception("未找到图片元素")
                         except Exception as screenshot_error:
-                            print(f"[ERROR] 截图方式也失败: {screenshot_error}")
-                            print(f"[ERROR] 所有下载方式都失败，跳过图片 {idx + 1}")
+                            self.logger.error(f"截图方式也失败: {screenshot_error}")
+                            self.logger.error(f"所有下载方式都失败，跳过图片 {idx + 1}")
                             
                 except Exception as e:
-                    print(f"[ERROR] 处理图片 {idx + 1} 时出错: {e}")
+                    self.logger.error(f"处理图片 {idx + 1} 时出错: {e}")
                     continue
             
-            print(f"[DEBUG] 共保存 {len(saved_files)} 张图片")
+            self.logger.debug(f"共保存 {len(saved_files)} 张图片")
             return saved_files
             
         except Exception as e:
-            print(f"[ERROR] 保存图片失败: {e}")
+            self.logger.error(f"保存图片失败: {e}")
             return saved_files
     
     async def save_images_by_urls(self, save_dir: str, target_urls: List[str]) -> List[str]:
@@ -343,12 +372,12 @@ class ImageSaver:
         Returns:
             List[str]: 保存的文件路径列表
         """
-        print(f"[DEBUG] 准备保存 {len(target_urls)} 张指定URL的图片到 {save_dir}...")
+        self.logger.debug(f"准备保存 {len(target_urls)} 张指定URL的图片到 {save_dir}...")
         
         # 创建保存目录
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
-        print(f"[DEBUG] ✓ 目录已创建/存在: {save_path.absolute()}")
+        self.logger.debug(f"✓ 目录已创建/存在: {save_path.absolute()}")
         
         saved_files = []
         target_urls_set = set(target_urls)
@@ -366,13 +395,13 @@ class ImageSaver:
                     container_elements = await self.page.query_selector_all(selector)
                     if container_elements:
                         containers = container_elements
-                        print(f"[DEBUG] ✓ 使用选择器找到 {len(containers)} 个图片容器: {selector}")
+                        self.logger.debug(f"✓ 使用选择器找到 {len(containers)} 个图片容器: {selector}")
                         break
                 except:
                     continue
             
             if not containers:
-                print("[WARNING] 未找到生成的图片容器")
+                self.logger.warning("未找到生成的图片容器")
                 return saved_files
             
             # 遍历所有容器，只保存URL匹配的图片
@@ -402,11 +431,11 @@ class ImageSaver:
                             break
                     
                     if not is_target:
-                        print(f"[DEBUG] 跳过图片 {idx + 1}（URL不匹配）")
+                        self.logger.debug(f"跳过图片 {idx + 1}（URL不匹配）")
                         continue
                     
                     matched_count += 1
-                    print(f"[DEBUG] 处理目标图片 {matched_count}/{len(target_urls)}...")
+                    self.logger.debug(f"处理目标图片 {matched_count}/{len(target_urls)}...")
                     
                     # 方法1: 优先尝试点击下载按钮（获得原始清晰度）
                     download_success = False
@@ -415,7 +444,7 @@ class ImageSaver:
                         
                         if download_button:
                             # 使用 Playwright 的下载监听功能
-                            print("[DEBUG] 点击下载按钮，使用浏览器原生下载...")
+                            self.logger.debug("点击下载按钮，使用浏览器原生下载...")
                             
                             # 监听下载事件
                             async with self.page.expect_download(timeout=30000) as download_info:
@@ -434,16 +463,16 @@ class ImageSaver:
                             await download.save_as(str(file_path))
                             
                             saved_files.append(str(file_path.absolute()))
-                            print(f"[DEBUG] ✓ 图片已保存（原生下载）: {file_path.absolute()}")
+                            self.logger.debug(f"✓ 图片已保存（原生下载）: {file_path.absolute()}")
                             download_success = True
                             
                     except Exception as download_btn_error:
-                        print(f"[DEBUG] 下载按钮方式失败: {download_btn_error}")
+                        self.logger.debug(f"下载按钮方式失败: {download_btn_error}")
                     
                     # 方法2: 如果下载按钮失败，尝试直接下载图片 URL
                     if not download_success:
                         try:
-                            print(f"[DEBUG] 尝试直接下载图片 URL: {processed_url[:80]}...")
+                            self.logger.debug(f"尝试直接下载图片 URL: {processed_url[:80]}...")
                             
                             # 使用 Playwright 的 request API 下载
                             response = await self.page.request.get(processed_url)
@@ -461,38 +490,38 @@ class ImageSaver:
                                     f.write(content)
                                 
                                 saved_files.append(str(file_path.absolute()))
-                                print(f"[DEBUG] ✓ 图片已保存（URL下载）: {file_path.absolute()}")
+                                self.logger.debug(f"✓ 图片已保存（URL下载）: {file_path.absolute()}")
                                 download_success = True
                             else:
                                 raise Exception(f"下载失败，状态码: {response.status}")
                                 
                         except Exception as url_error:
-                            print(f"[DEBUG] URL 下载失败: {url_error}")
+                            self.logger.debug(f"URL 下载失败: {url_error}")
                     
                     # 方法3: 如果都失败，使用截图作为兜底（清晰度较低）
                     if not download_success:
                         try:
-                            print("[DEBUG] 使用截图方式作为兜底...")
+                            self.logger.debug("使用截图方式作为兜底...")
                             filename = f"image_{int(time.time())}_{matched_count}.png"
                             file_path = save_path / filename
                             
                             await img_element.screenshot(path=str(file_path))
                             
                             saved_files.append(str(file_path.absolute()))
-                            print(f"[DEBUG] ✓ 图片已保存（截图方式，清晰度较低）: {file_path.absolute()}")
+                            self.logger.debug(f"✓ 图片已保存（截图方式，清晰度较低）: {file_path.absolute()}")
                         except Exception as screenshot_error:
-                            print(f"[ERROR] 截图方式也失败: {screenshot_error}")
-                            print(f"[ERROR] 所有下载方式都失败，跳过图片 {matched_count}")
+                            self.logger.error(f"截图方式也失败: {screenshot_error}")
+                            self.logger.error(f"所有下载方式都失败，跳过图片 {matched_count}")
                             
                 except Exception as e:
-                    print(f"[ERROR] 处理图片 {idx + 1} 时出错: {e}")
+                    self.logger.error(f"处理图片 {idx + 1} 时出错: {e}")
                     continue
             
-            print(f"[DEBUG] 共保存 {len(saved_files)} 张目标图片（匹配到 {matched_count} 张）")
+            self.logger.debug(f"共保存 {len(saved_files)} 张目标图片（匹配到 {matched_count} 张）")
             return saved_files
             
         except Exception as e:
-            print(f"[ERROR] 保存图片失败: {e}")
+            self.logger.error(f"保存图片失败: {e}")
             return saved_files
     
     async def _find_download_button(self, container):
@@ -504,7 +533,7 @@ class ImageSaver:
             try:
                 download_button = await container.query_selector(btn_selector)
                 if download_button:
-                    print(f"[DEBUG] ✓ 找到下载按钮: {btn_selector}")
+                    self.logger.debug(f"✓ 找到下载按钮: {btn_selector}")
                     break
             except:
                 continue

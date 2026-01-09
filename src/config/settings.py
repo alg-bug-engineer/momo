@@ -18,6 +18,11 @@ DEFAULT_SESSIONS_DIR = "sessions"
 DEFAULT_CONFIGS_DIR = "data/configs"
 DEFAULT_LOGS_DIR = "data/logs"
 
+# 日志配置
+LOG_LEVEL = "DEBUG"  # 可选: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_MAX_BYTES = 10 * 1024 * 1024  # 日志文件最大大小 (10MB)
+LOG_BACKUP_COUNT = 5  # 保留的日志备份数量
+
 # 超时配置 (毫秒)
 RESPONSE_TIMEOUT = 120000  # 等待响应生成
 IMAGE_GENERATION_TIMEOUT = 60000  # 等待图片生成
