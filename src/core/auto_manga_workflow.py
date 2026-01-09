@@ -826,6 +826,9 @@ class AutoMangaWorkflow(BrowserController):
         
         container_selector = '.attachment-container.generated-images'
         start_time = time.time()
+        wait_count = 0  # 等待次数计数器
+        base_wait_interval = 3  # 基础等待间隔（秒）
+        refresh_interval = 5  # 每5次等待后刷新一次
         
         while True:
             elapsed = time.time() - start_time
@@ -834,6 +837,16 @@ class AutoMangaWorkflow(BrowserController):
                 break
             
             try:
+                # 每隔一定次数后刷新页面
+                if wait_count > 0 and wait_count % refresh_interval == 0:
+                    self.logger.debug(f"已等待 {wait_count} 次，执行页面刷新...")
+                    try:
+                        await self.page.reload(wait_until='domcontentloaded')
+                        self.logger.debug("页面刷新完成，等待页面稳定...")
+                        await asyncio.sleep(2)  # 等待页面稳定
+                    except Exception as refresh_error:
+                        self.logger.warning(f"页面刷新失败: {refresh_error}，继续检查...")
+                
                 # 获取所有图片容器
                 containers = await self.page.query_selector_all(container_selector)
                 current_container_count = len(containers)
@@ -869,12 +882,18 @@ class AutoMangaWorkflow(BrowserController):
                         self.logger.debug(f"✓ 所有批次图片已生成并加载完成")
                         return
                 
-                self.logger.debug(f"当前容器数量: {current_container_count}/{total_batches}，继续等待...")
-                await asyncio.sleep(2)
+                # 计算动态等待间隔（随着等待次数增加而增加，但不超过10秒）
+                wait_interval = min(base_wait_interval + (wait_count // refresh_interval), 10)
+                self.logger.debug(f"当前容器数量: {current_container_count}/{total_batches}，继续等待... (等待间隔: {wait_interval}秒)")
+                await asyncio.sleep(wait_interval)
+                wait_count += 1
                 
             except Exception as e:
-                self.logger.debug(f"检查批次状态时出错: {e}，继续等待...")
-                await asyncio.sleep(2)
+                # 计算动态等待间隔
+                wait_interval = min(base_wait_interval + (wait_count // refresh_interval), 10)
+                self.logger.debug(f"检查批次状态时出错: {e}，继续等待... (等待间隔: {wait_interval}秒)")
+                await asyncio.sleep(wait_interval)
+                wait_count += 1
     
     async def save_all_images_sequentially(self, save_dir: str, total_batches: int) -> List[str]:
         """按顺序保存所有生成的图片容器
@@ -928,6 +947,18 @@ class AutoMangaWorkflow(BrowserController):
         print("="*80)
         
         try:
+            # 先点击 New Chat，在新窗口进行生成
+            print("\n" + "-"*80)
+            print("步骤1: 打开新聊天窗口")
+            print("-"*80)
+            await self.click_new_chat()
+            
+            # 选择 Create Images 工具
+            print("\n" + "-"*80)
+            print("步骤2: 选择 Create Images 工具")
+            print("-"*80)
+            await self.select_create_images_tool()
+            
             # 使用主题文件夹作为保存路径
             if save_dir is None:
                 save_dir = self.theme_dir if self.theme_dir else DEFAULT_IMAGES_DIR
@@ -941,7 +972,9 @@ class AutoMangaWorkflow(BrowserController):
             self.logger.info(f"封面生成提示词: {cover_query}")
             
             # 上传封面模板图片
-            print("\n[DEBUG] 上传封面模板图片...")
+            print("\n" + "-"*80)
+            print("步骤3: 上传封面模板图片")
+            print("-"*80)
             await self.upload_image(cover_image_path)
             await asyncio.sleep(1)  # 等待图片上传完成
             
@@ -994,8 +1027,14 @@ class AutoMangaWorkflow(BrowserController):
             if len(new_image_urls) > 0:
                 self.logger.debug(f"✓ 检测到 {len(new_image_urls)} 张新图片URL，尝试保存...")
                 
-                # 额外等待一下，确保图片至少部分加载
-                await asyncio.sleep(3)
+                # 发送"下一步"消息，让页面自动滚动，渲染出最后一张图片
+                try:
+                    self.logger.debug("发送'下一步'消息，触发页面滚动...")
+                    await self.send_message("下一步")
+                    await asyncio.sleep(3)  # 等待3秒，让页面自动滚动并渲染图片
+                    self.logger.debug("✓ 页面滚动完成")
+                except Exception as e:
+                    self.logger.warning(f"发送'下一步'消息失败: {e}，继续执行...")
                 
                 # 保存封面图片（即使加载超时也尝试保存）
                 self.logger.debug("保存封面图片...")
@@ -1073,16 +1112,12 @@ class AutoMangaWorkflow(BrowserController):
                 print("跳过脚本和漫画生成，直接测试封面生成")
                 print("="*80)
                 
-                # 设置主题名称
+                # 设置主题名称（直接使用概念或提供的主题名称）
                 if theme_name:
                     self.theme_name = theme_name
                 elif self.concept:
-                    # 如果没有提供主题名称，使用概念名生成默认主题
-                    import re
-                    default_theme = self.concept.replace('的', '').replace('领域', '').strip()
-                    if len(default_theme) > 10:
-                        default_theme = default_theme[:10]
-                    self.theme_name = f"{default_theme}漫画"
+                    # 直接使用概念名作为主题名称
+                    self.theme_name = self.concept
                 else:
                     self.theme_name = "测试主题漫画"
                 
@@ -1091,13 +1126,7 @@ class AutoMangaWorkflow(BrowserController):
                 self.logger.info(f"✓ 主题名称: {self.theme_name}")
                 self.logger.info(f"✓ 主题文件夹: {self.theme_dir}")
                 
-                # 选择 Create Images 工具
-                print("\n" + "="*80)
-                print("步骤1: 选择 Create Images 工具")
-                print("="*80)
-                await self.select_create_images_tool()
-                
-                # 直接生成封面图片
+                # 直接生成封面图片（generate_cover_image 内部会处理 New Chat 和 Create Images 工具选择）
                 save_dir = self.theme_dir if self.theme_dir else images_dir
                 cover_file = await self.generate_cover_image(
                     cover_image_path=DEFAULT_COVER_IMAGE_PATH,
@@ -1126,16 +1155,12 @@ class AutoMangaWorkflow(BrowserController):
                 copied_content, panel_count = self.load_from_session_file(session_file)
                 self.logger.debug(f"✓ 已从 session 文件读取内容，宫格数量: {panel_count}")
                 
-                # 如果跳过脚本生成，使用概念名生成默认主题
+                # 如果跳过脚本生成，直接使用概念名作为主题
                 print("\n" + "="*80)
-                print("步骤2: 生成主题名称并创建主题文件夹")
+                print("步骤2: 设置主题名称并创建主题文件夹")
                 print("="*80)
-                # 基于概念名生成默认主题名称
-                import re
-                default_theme = self.concept.replace('的', '').replace('领域', '').strip()
-                if len(default_theme) > 10:
-                    default_theme = default_theme[:10]
-                self.theme_name = f"{default_theme}漫画"
+                # 直接使用概念名作为主题名称
+                self.theme_name = self.concept
                 self.theme_dir = self.create_theme_directory(self.theme_name)
                 self.logger.info(f"✓ 主题名称: {self.theme_name}")
                 self.logger.info(f"✓ 主题文件夹: {self.theme_dir}")
@@ -1155,6 +1180,7 @@ class AutoMangaWorkflow(BrowserController):
                     self.logger.debug("✓ 脚本生成完成")
                 else:
                     self.logger.warning("脚本生成可能未完成，继续尝试复制")
+                await asyncio.sleep(10)  # 避免错误检查按钮
                 
                 # 步骤4: 复制表格内容
                 print("\n" + "="*80)
@@ -1275,6 +1301,7 @@ class AutoMangaWorkflow(BrowserController):
                     await self.send_message(full_message)
                 
                 # 等待当前批次的图片生成完成（不保存）
+                t1 = time.time()
                 self.logger.debug(f"等待批次 {batch_index + 1} 图片生成...")
                 success, new_image_urls = await self.wait_for_images_generated(
                     initial_image_count=initial_image_count,
@@ -1289,12 +1316,32 @@ class AutoMangaWorkflow(BrowserController):
                     self.logger.warning(f"批次 {batch_index + 1} 图片生成成功，但未检测到新图片URL")
                 else:
                     self.logger.warning(f"批次 {batch_index + 1} (P{start_panel}-P{end_panel}) 图片生成超时或失败")
-                
+                t2 = time.time()
+                print(f"批次 {batch_index + 1} 图片生成完成，耗时: {t2 - t1} 秒")
+                if t2 - t1 > 20:
+                    sleep_time = 2
+                else:
+                    sleep_time = 20
                 # 如果不是最后一批，等待一下再继续
                 if batch_index < total_batches - 1:
-                    self.logger.debug(f"等待 2 秒后继续下一批次...")
-                    await asyncio.sleep(2)
+                    self.logger.debug(f"等待 {sleep_time} 秒后继续下一批次...")
+                    await asyncio.sleep(sleep_time)
             
+            # 发送"下一步"消息，让页面自动滚动，渲染出最后一张图片
+            try:
+                self.logger.debug("发送'下一步'消息，触发页面滚动...")
+                await self.send_message("下一步")
+                await asyncio.sleep(3)  # 等待3秒，让页面自动滚动并渲染图片
+                self.logger.debug("✓ 页面滚动完成")
+                
+                # 刷新页面
+                self.logger.debug("刷新页面...")
+                await self.page.reload()
+                await self.page.wait_for_load_state('domcontentloaded')
+                self.logger.debug("✓ 页面刷新完成")
+            except Exception as e:
+                self.logger.warning(f"发送'下一步'消息或刷新页面失败: {e}，继续执行...")
+
             # 第二阶段：等待所有批次生成完成
             print("\n" + "="*80)
             print("第二阶段：等待所有批次生成完成")

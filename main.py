@@ -5,6 +5,7 @@ Auto-Manga 自动漫画生成项目
 主入口脚本
 """
 
+import argparse
 import asyncio
 import sys
 import time
@@ -26,38 +27,45 @@ async def main():
     logger = init_logger(session_id)
     logger.info("=== Auto-Manga 自动漫画生成项目启动 ===")
     
-    # 检查是否提供了参数
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='Auto-Manga 自动漫画生成项目')
+    parser.add_argument('--concept', '-concept', type=str, default=None,
+                        help='漫画概念/主题（例如：智能体、大模型领域的幻觉等）')
+    parser.add_argument('--cover', '-c', type=str, nargs='?', const='', default=None,
+                        metavar='THEME_NAME',
+                        help='封面生成测试模式，可选指定主题名称')
+    parser.add_argument('session_file', type=str, nargs='?', default=None,
+                        help='Session 文件路径（如果提供，将跳过脚本生成步骤）')
+    
+    args = parser.parse_args()
+    
+    # 确定运行模式
     skip_script = False
     session_file = None
     skip_to_cover = False
     theme_name = None
-    concept = "智能体"
+    concept = args.concept
     
-    if len(sys.argv) > 1:
-        # 解析命令行参数
-        args = sys.argv[1:]
-        
-        # 检查是否是封面测试模式
-        if '--cover' in args or '-c' in args:
-            skip_to_cover = True
-            # 查找主题名称参数
-            try:
-                cover_index = args.index('--cover') if '--cover' in args else args.index('-c')
-                if cover_index + 1 < len(args) and not args[cover_index + 1].startswith('-'):
-                    theme_name = args[cover_index + 1]
-            except:
-                pass
-            logger.info("封面生成测试模式")
-            if theme_name:
-                logger.info(f"使用指定主题名称: {theme_name}")
-        else:
-            # 如果提供了参数，假设是 session 文件路径
-            session_file = args[0]
-            skip_script = True
-            logger.info(f"将从 session 文件读取内容: {session_file}")
-            logger.info("跳过脚本生成步骤")
+    if args.cover is not None:
+        # 封面测试模式
+        skip_to_cover = True
+        if args.cover:  # 如果提供了主题名称
+            theme_name = args.cover
+        logger.info("封面生成测试模式")
+        if theme_name:
+            logger.info(f"使用指定主题名称: {theme_name}")
+    elif args.session_file:
+        # Session 文件模式
+        session_file = args.session_file
+        skip_script = True
+        logger.info(f"将从 session 文件读取内容: {session_file}")
+        logger.info("跳过脚本生成步骤")
     else:
         # 正常流程：生成脚本
+        if concept is None:
+            logger.error("错误：未提供概念参数。请使用 --concept 或 -concept 参数指定概念。")
+            logger.info("示例: python main.py --concept 智能体")
+            sys.exit(1)
         logger.info(f"将生成新脚本，概念: {concept}")
     
     try:
