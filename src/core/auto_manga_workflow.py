@@ -1043,8 +1043,20 @@ class AutoMangaWorkflow(BrowserController):
                 if saved_files and len(saved_files) > 0:
                     # 封面图片应该只有一张，取第一张
                     cover_file = saved_files[0]
-                    self.logger.debug(f"✓ 封面图片已保存: {cover_file}")
-                    return cover_file
+                    
+                    # 重命名为 "封面.png"
+                    cover_path = Path(cover_file)
+                    cover_dir = cover_path.parent
+                    new_cover_path = cover_dir / "封面.png"
+                    
+                    # 如果目标文件已存在，先删除
+                    if new_cover_path.exists():
+                        new_cover_path.unlink()
+                    
+                    # 重命名文件
+                    cover_path.rename(new_cover_path)
+                    self.logger.debug(f"✓ 封面图片已保存并重命名: {new_cover_path}")
+                    return str(new_cover_path)
                 else:
                     # 如果通过URL保存失败，尝试使用备用方法：直接保存最新容器中的图片
                     self.logger.warning("通过URL保存失败，尝试备用方法：直接保存最新容器中的图片...")
@@ -1060,8 +1072,20 @@ class AutoMangaWorkflow(BrowserController):
                             if saved_files:
                                 # 取最后一张（应该是封面图片）
                                 cover_file = saved_files[-1]
-                                self.logger.debug(f"✓ 封面图片已保存（备用方法）: {cover_file}")
-                                return cover_file
+                                
+                                # 重命名为 "封面.png"
+                                cover_path = Path(cover_file)
+                                cover_dir = cover_path.parent
+                                new_cover_path = cover_dir / "封面.png"
+                                
+                                # 如果目标文件已存在，先删除
+                                if new_cover_path.exists():
+                                    new_cover_path.unlink()
+                                
+                                # 重命名文件
+                                cover_path.rename(new_cover_path)
+                                self.logger.debug(f"✓ 封面图片已保存并重命名（备用方法）: {new_cover_path}")
+                                return str(new_cover_path)
                     except Exception as backup_error:
                         self.logger.warning(f"备用保存方法也失败: {backup_error}")
                     
