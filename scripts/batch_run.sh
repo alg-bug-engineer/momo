@@ -2,13 +2,13 @@
 
 # python main.py --concept 提示词工程
 # python main.py --concept 大语言模型
-python main.py --concept 微调
-# python main.py --concept 预训练
-# python main.py --concept Transformer
-# python main.py --concept Attention机制
-# python main.py --concept 神经网络
-# python main.py --concept 神经网络参数量
-# python main.py --concept 上下文窗口
-# python main.py --concept 温度值Temperature
-# python main.py --concept 多模态
-# python main.py --concept Embedding向量化
+# python main.py --concept 微调
+python main.py --concept 预训练
+python main.py --concept Transformer
+python main.py --concept Attention机制
+python main.py --concept 神经网络
+python main.py --concept 神经网络参数量
+python main.py --concept 上下文窗口
+python main.py --concept 温度值Temperature
+python main.py --concept 多模态
+python main.py --concept Embedding向量化
